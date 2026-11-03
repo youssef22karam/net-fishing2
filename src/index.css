@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font:13px system-ui,sans-serif;color:#fff}
+canvas{display:block;touch-action:none}
+#vig{position:fixed;inset:0;pointer-events:none;background:radial-gradient(ellipse at 50% 45%,transparent 62%,rgba(0,0,0,.35))}
+#clock{position:fixed;left:12px;top:calc(8px + env(safe-area-inset-top,0px));font-size:16px;text-shadow:0 1px 3px #000}
+#hud{position:fixed;left:0;right:0;bottom:0;display:flex;flex-wrap:wrap;gap:6px;justify-content:center;align-items:center;padding:8px 8px calc(8px + env(safe-area-inset-bottom,0px));background:linear-gradient(transparent,rgba(0,0,0,.5))}
+#hud button{background:rgba(15,25,40,.72);color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:14px;padding:8px 11px;font:inherit}
+#hud input{width:min(40vw,200px)}
+#keys{position:fixed;left:12px;top:calc(34px + env(safe-area-inset-top,0px));font-size:11px;opacity:.7;text-shadow:0 1px 3px #000;pointer-events:none}
+#flip{position:fixed;left:50%;top:64px;transform:translate(-50%,-100%);width:max-content;white-space:nowrap;font:600 11px ui-monospace,monospace;text-align:center;text-shadow:0 1px 3px #000;pointer-events:none}
+#flip div{position:relative;height:10px;margin:4px auto;width:min(27vw,120px);border-radius:6px;border:1px solid rgba(255,255,255,.4);background:linear-gradient(90deg,#ff4a3a,#ffb340 22%,#4ee08a 38%,#4ee08a 62%,#ffb340 78%,#ff4a3a)}
+#flip i{position:absolute;top:-5px;width:8px;height:18px;margin-left:-4px;border-radius:4px;background:#4ee08a;border:2px solid #fff;box-sizing:border-box}
+#capz{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);display:none;text-align:center;padding:14px 20px;border-radius:14px;background:rgba(10,16,26,.82);border:1px solid rgba(255,255,255,.3);font:14px system-ui;z-index:5}
+#capz b{font-size:20px;color:#ff6a5a}#capz button{margin-top:8px;background:#2d6cdf;color:#fff;border:0;border-radius:10px;padding:9px 16px;font:inherit}
+#pad{position:fixed;left:0;right:0;bottom:calc(112px + env(safe-area-inset-bottom,0px));display:none;justify-content:space-between;align-items:flex-end;padding:0 14px;pointer-events:none}
+body.touch #pad{display:flex}
+#lever{pointer-events:auto;position:relative;width:62px;height:160px;border-radius:16px;background:rgba(15,25,40,.6);border:1px solid rgba(255,255,255,.3);touch-action:none}
+#lf{position:absolute;left:6px;right:6px;bottom:6px;max-height:calc(100% - 12px);border-radius:10px;background:rgba(127,196,232,.55)}
+#lever:after{content:'';position:absolute;left:0;right:0;bottom:20%;height:10%;border-top:1px dashed rgba(255,255,255,.4);border-bottom:1px dashed rgba(255,255,255,.4)}
+#lt{position:absolute;top:6px;left:0;right:0;text-align:center;font:600 11px ui-monospace,monospace}
+#steer{display:flex;gap:12px;pointer-events:auto}
+#steer div{width:76px;height:76px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:30px;background:rgba(15,25,40,.6);border:1px solid rgba(255,255,255,.3);touch-action:none;user-select:none;-webkit-user-select:none}
+#steer div.down{background:rgba(120,180,220,.5)}
+
+#root{position:fixed;inset:0;pointer-events:none;z-index:10}
+#root .pe{pointer-events:auto}
+#hud{opacity:.0;transition:opacity .4s;z-index:20}#hud:hover{opacity:1}
+.lil-gui.root{z-index:30!important}
+#keys{display:none}
+#flip{opacity:.0!important}
