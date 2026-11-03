@@ -21,8 +21,18 @@ void main(){gl_FragColor=vec4(sky(normalize(vD)),1.);
 }`}));
 skyMesh.frustumCulled=false;skyMesh.renderOrder=-10;scene.add(skyMesh);
 
-const seabed=new THREE.Mesh(new THREE.PlaneGeometry(6000,6000).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({color:0x998866,depthTest:false,depthWrite:false}));
-seabed.renderOrder=-5;seabed.position.y=-14;scene.add(seabed);   // drawn right after the sky, before the water: waves can never expose it
+const seabedU={uCol:{value:new THREE.Color(0x998866)},uTime:U.uTime};
+const seabed=new THREE.Mesh(new THREE.PlaneGeometry(6000,6000).rotateX(-Math.PI/2),new THREE.ShaderMaterial({uniforms:seabedU,depthTest:false,depthWrite:false,
+ vertexShader:'varying vec3 vW;void main(){vec4 w=modelMatrix*vec4(position,1.);vW=w.xyz;gl_Position=projectionMatrix*viewMatrix*w;}',
+ fragmentShader:`varying vec3 vW;uniform vec3 uCol;uniform float uTime;
+float h2(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float n2(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(h2(i),h2(i+vec2(1,0)),f.x),mix(h2(i+vec2(0,1)),h2(i+vec2(1,1)),f.x),f.y);}
+float caus(vec2 p,float t){vec2 q=p;float c=0.;for(int i=0;i<3;i++){q+=vec2(sin(q.y*1.6+t*.7),cos(q.x*1.4-t*.6))*.55;c+=abs(sin(q.x*2.1)+sin(q.y*2.4));}return pow(1.-clamp(c/6.,0.,1.),5.);}
+void main(){vec2 p=vW.xz;float rip=sin(p.x*.9+n2(p*.35)*6.)*.5+.5;float g=n2(p*.12)*.5+n2(p*1.7)*.25;
+ vec3 c=uCol*(.78+.22*rip+.25*g);float rock=smoothstep(.62,.8,n2(p*.05+7.));c=mix(c,uCol*.45,rock*.7);
+ c+=uCol*caus(p*.55,uTime)*.55;gl_FragColor=vec4(c,1.);}`}));
+seabed.material.color=seabedU.uCol.value;
+seabed.renderOrder=-5;seabed.position.y=-14;scene.add(seabed);
 
 function radialGrid(seg,outer=6e4){                              // log-spaced rings: dense at the camera, sparse to the horizon
  const step=Math.PI*2/seg,radii=[0];let r=.4;
@@ -37,8 +47,8 @@ const water=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.ShaderMaterial({
 water.frustumCulled=false;water.renderOrder=1;scene.add(water);
 /* depth pre-pass: water has no depth write, so overlapping crests were blended in triangle order and the sea BEHIND a near wave showed through its tip (a fake horizon).
    This pass writes only depth (slightly pushed back); the shaded pass below then keeps just the nearest surface fragment, still alpha-blended over the sea bed and submerged objects. */
-const waterZ=new THREE.Mesh(water.geometry,new THREE.ShaderMaterial({uniforms:water.material.uniforms,vertexShader:WVS,fragmentShader:'void main(){gl_FragColor=vec4(0.);}',colorWrite:false,depthWrite:true,depthTest:true,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:2}));
-waterZ.frustumCulled=false;waterZ.renderOrder=.5;scene.add(waterZ);
+const waterZ=new THREE.Mesh(water.geometry,new THREE.ShaderMaterial({uniforms:water.material.uniforms,vertexShader:WVS,fragmentShader:'void main(){gl_FragColor=vec4(0.);}',colorWrite:false,transparent:true,depthWrite:true,depthTest:true,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:2}));
+waterZ.frustumCulled=false;waterZ.renderOrder=.95;   // transparent list: underwater objects (renderOrder .2-.9) draw first and are depth-tested against the hull onlyscene.add(waterZ);
 
 /* ===== 6. rain: 4 camera-centred layers of instanced streak quads ===== */
 const RL=[[14,700,.05,1.4,.34,9],[40,900,.04,1.3,.3,10],[110,1100,.032,1.2,.26,11],[260,1300,.026,1.1,.22,12]].map(([box,n,len,wid,op,spd])=>{
@@ -261,14 +271,3 @@ function fBuoy(col,r=.55){const g=new THREE.Group(),a=new THREE.Mesh(new THREE.S
 {const it=fAdd(fBuoy(0xff9a1f,.6),70,10);fTether(it,-16,0x333333,.03);fBlock(it,-16.3,.7);
  [[4,0x2fd2ff],[9,0xffd23a],[15,0xff3aa0]].forEach(([d,c])=>{const t=new THREE.Mesh(new THREE.TorusGeometry(1.5,.12,8,28),fMat(c,.35));t.rotation.x=Math.PI/2;t.position.set(it.x,-d,it.z);scene.add(t)})}
 // 7  chain buoy: alternating links down to 20 m
-{const it=fAdd(fBuoy(0x2f7fd8,.6),100,-12);for(let k=0;k<20;k++){const m=new THREE.Mesh(new THREE.TorusGeometry(.14,.04,6,10),fMat(k%2?0xd8d8d8:0x8a8f94,.12));m.position.set(it.x,-k-.5,it.z);m.rotation.y=k%2?0:Math.PI/2;scene.add(m)}fBlock(it,-20.4,.8)}
-// 8  big beach ball
-{const g=new THREE.Group(),b=new THREE.Mesh(new THREE.SphereGeometry(1.1,20,14),fMat(0xffffff,.25));b.position.y=.3;g.add(b);
- for(let k=0;k<4;k++){const s=new THREE.Mesh(new THREE.CylinderGeometry(1.11,1.11,.5,20,1,true),fMat(k%2?0xe8352b:0x2fd2ff,.3));s.position.y=-.4+k*.5;g.add(s)}fAdd(g,30,26)}
-function floaters(dt,t){
- if(!FL.length)return;fProbe();if(!fgot)return;const k=1-Math.exp(-dt*5),w=1+2*storm;
- for(const it of FL){const g=it.g;g.position.y=g.userData.init?g.position.y+(fh[it.i]-g.position.y)*k:fh[it.i];g.userData.init=1;
-  if(it.tilt){g.rotation.x=.1*w*Math.sin(t*1.1+it.i*1.7);g.rotation.z=.12*w*Math.sin(t*.8+it.i*2.3)}
-  for(const th of it.tethers){th.m.scale.y=Math.max(.01,g.position.y-th.bot)}}}
-
-/* --- cameras: Chase (orbit), Bridge (inside), Bow, Low side, Drone, Cinematic (auto-cuts) --- */

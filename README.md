@@ -1,17 +1,17 @@
-# Netfishing — enhance fishing simulation realism (React + Vite + Tailwind + three.js)
+# Netfishing — overhaul (React + Vite + Tailwind + three.js)
 
 Built on top of `youssef22karam/netfishing` (FFT sea, wake sim, weather,
 buoyant lobster boat and cameras in `src/engine/`). Gameplay lives in
-`src/game/` and `src/games/`.
+`src/game/`, the 2D catch games in `src/games/`, and extra UI in `src/ui/`.
 
 ## Split-file edition (every file ≤ 30,000 bytes)
 
 For GitHub upload / Arena: no file in this repo exceeds 30,000 bytes.
 
 - `src/engine/boat.js` (127,856 bytes) → `src/engine/parts/boat.part01–05.js`
-- `src/engine/sea.js` (80,297 bytes) → `src/engine/parts/sea.part01–03.js`
-- `src/game/nets3d.js` (33,152 bytes) → `src/game/parts/nets3d.part01–02.js`
-- `src/game/world.js` (35,154 bytes) → `src/game/parts/world.part01–02.js`
+- `src/engine/sea.js` (81,351 bytes) → `src/engine/parts/sea.part01–03.js`
+- `src/game/nets3d.js` (36,497 bytes) → `src/game/parts/nets3d.part01–02.js`
+- `src/game/world.js` (40,275 bytes) → `src/game/parts/world.part01–02.js`
 
 Split is at line boundaries; parts are raw slices with nothing added.
 `tools/reassemble.mjs` concatenates the parts byte-for-byte back into the

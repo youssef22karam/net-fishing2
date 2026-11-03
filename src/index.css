@@ -29,3 +29,9 @@ body.touch #pad{display:flex}
 .lil-gui.root{z-index:30!important}
 #keys{display:none}
 #flip{opacity:.0!important}
+
+/* engine's own touch pad / buttons are replaced by the React controls */
+#pad,#hud{display:none!important}
+.feedpop{animation:feedrise 2.6s ease-out forwards}
+@keyframes feedrise{0%{opacity:0;transform:translateY(10px) scale(.9)}12%{opacity:1;transform:none}80%{opacity:1}100%{opacity:0;transform:translateY(-14px)}}
+#flip{display:none!important}

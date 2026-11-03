@@ -9,6 +9,7 @@ import { CastNet, WallNet, TrawlRig, Buoy } from './nets3d.js';
 import { Walker, HELM } from './walk.js';
 import { store } from './store.js';
 
+
 const R = Math.random, V3 = THREE.Vector3;
 const CREEP = [.8, .55, .3, 0];            // power levels (m/s). Forward only; the player can only go down to a full stop.
 const wrap = (a) => ((a + Math.PI * 3) % TAU) - Math.PI;
@@ -25,7 +26,7 @@ export class World {
     this.S = S; this.boat = S.boat; this.fw = new FishWorld(S); this.fw.initialWorld(S.boat); this.gulls = new Gulls(S, this.fw);
     this.t = 0; this.charging = false; this.chargeT = 0; this.cast = null; this.cd = 0; this.rig = null; this.wall = null; this.gill = []; this.seineState = 'idle'; this.dying = [];
     this.pointerLocked = false; this.lastNoise = 0; this.dragK = 1; this.walker = new Walker(); this.walking = false; this.keysDown = new Set(); this.auto = { power: 0, rudder: 0 };
-    this.nets = {}; this.refreshNets(true); this.gameActive = false; this.startAt = 0; this.coachT = 0;
+    this.touch = { fwd: 0, strafe: 0, run: false }; this.sonar = { cols: [], ahead: null }; this.sonarT = 0; this.feed = []; this.trawlPending = false; this.nets = {}; this.refreshNets(true); this.gameActive = false; this.startAt = 0; this.coachT = 0;
     S.onFrame = (dt) => this.tick(dt);
     this.bindInput(); S.setMode(1); store.set({ started: true, camMode: 1, walking: false, auto: { ...this.auto } }); this.applyControls();
   }
@@ -48,10 +49,10 @@ export class World {
   goDeck() { if (this.walking) return this.sitDown(); this.S.setMode(6); this.syncMode(); }
   startWalk() {
     const S = this.S; this.walking = true; this.walker.reset(); S.DECK.yaw = 0; S.DECK.pitch = -.12; S.DECK.eye.set(this.walker.x, this.walker.eyeY, this.walker.z);
-    this.auto.power = clamp(this.boat.power, 0, 5); this.auto.rudder = 0; this.applyControls();
-    store.set({ walking: true, help: false, auto: { ...this.auto } }); this.toast('You left the wheel. W A S D walk · mouse looks · Shift runs · ↑ ↓ throttle · ← → rudder · B at the wheel to sit back down');
+    this.keysDown.clear(); this.touch.fwd = this.touch.strafe = 0; this.S.setLever && this.S.setLever(0); this.auto.power = 0; this.auto.rudder = 0; this.applyControls();
+    store.set({ walking: true, help: false, auto: { ...this.auto } }); this.toast(this.boat.speed > .3 ? 'You left the wheel — engine to idle, the boat coasts to a stop. Walk to the wheel (B) to drive again' : 'You left the wheel. The boat stays put. WASD walks · mouse looks · B at the wheel to sit back down');
   }
-  endWalk() { this.walking = false; this.charging = false; store.set({ walking: false, charge: null }); this.applyControls(); }
+  endWalk() { this.walking = false; this.charging = false; this.keysDown.clear(); this.touch.fwd = this.touch.strafe = 0; store.set({ walking: false, charge: null }); this.applyControls(); }
   sitDown() {
     if (!this.walker.nearHelm()) return this.toast('Walk back to the wheel (starboard side of the wheelhouse, behind the dash) and press B');
     this.S.setLever && this.S.setLever(Math.max(0, this.boat.power)); this.S.setMode(1); this.syncMode(); this.toast('Back at the wheel — W S throttle · A D steer');
@@ -65,9 +66,11 @@ export class World {
   setAuto(dp, dr) {
     if (!this.walking) return; this.auto.power = clamp(this.auto.power + dp, 0, 8); this.auto.rudder = clamp(Math.round((this.auto.rudder + dr) * 4) / 4, -1, 1); this.applyControls(); store.set({ auto: { ...this.auto } });
   }
-  toggleCreep() { if (!this.walking) return this.toast('Stand up from the wheel first (B)'); this.auto.power = this.auto.power > 0 ? 0 : .6; this.applyControls(); store.set({ auto: { ...this.auto } }); this.toast(this.auto.power ? 'Slow creep — about 1 knot. ↑ ↓ change the throttle' : 'Engine to idle — drifting'); }
+  toggleCreep() { if (!this.walking) return this.toast('Stand up from the wheel first (B)'); this.auto.power = this.auto.power > 0 ? 0 : 1.2; this.applyControls(); store.set({ auto: { ...this.auto } }); this.toast(this.auto.power ? 'Slow cruise — about 2 knots. ↑ ↓ change the throttle, V stops' : 'Engine to idle — drifting'); }
   creepSlower() {}
-  walkInput() { const k = this.keysDown; return { fwd: (k.has('KeyW') ? 1 : 0) - (k.has('KeyS') ? 1 : 0), strafe: (k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0), run: k.has('ShiftLeft') || k.has('ShiftRight') }; }
+  walkInput() { const k = this.keysDown, t = this.touch; return { fwd: clamp((k.has('KeyW') ? 1 : 0) - (k.has('KeyS') ? 1 : 0) + t.fwd, -1, 1), strafe: clamp((k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0) + t.strafe, -1, 1), run: k.has('ShiftLeft') || k.has('ShiftRight') || t.run }; }
+  setTouchMove(fwd, strafe, run = false) { this.touch.fwd = fwd; this.touch.strafe = strafe; this.touch.run = run; }
+  lookBy(dx, dy) { if (!this.walking || this.gameActive) return; this.S.DECK.yaw = wrap(this.S.DECK.yaw - dx * .0042); this.S.DECK.pitch = clamp(this.S.DECK.pitch - dy * .0042, -1.35, 1.2); }
 
   bindInput() {
     const cv = this.S.renderer.domElement, S = this.S;
@@ -75,7 +78,7 @@ export class World {
     addEventListener('pointerup', (e) => { this.dragLook = false; if (this.pointerLocked && e.button === 0) this.release(); });
     document.addEventListener('pointerlockchange', () => { this.pointerLocked = document.pointerLockElement === cv; });
     addEventListener('pointermove', (e) => {
-      if (!this.walking || this.gameActive) return; const mx = e.movementX || 0, my = e.movementY || 0; if (Math.abs(mx) + Math.abs(my) < 1) return;
+      if (!this.walking || this.gameActive) return; let mx = e.movementX || 0, my = e.movementY || 0; if (e.pointerType === 'touch') return; if (Math.abs(mx) + Math.abs(my) < 1) return;
       if (this.pointerLocked || this.dragLook) { const k = this.pointerLocked ? .0024 : .004; S.DECK.yaw = wrap(S.DECK.yaw - mx * k); S.DECK.pitch = clamp(S.DECK.pitch - my * k, -1.35, 1.2); }
     });
     addEventListener('keydown', (e) => {
@@ -84,7 +87,7 @@ export class World {
       if (c === 'KeyF') this.beginCharge(); else if (c === 'KeyG') this.haul(); else if (c === 'KeyN') this.cycleMethod(); else if (c === 'KeyT') this.cycleMesh(); else if (c === 'KeyV') this.toggleCreep();
       else if (c === 'KeyB' || (c === 'KeyE' && this.walking && this.walker.nearHelm())) this.goDeck(); else if (c === 'KeyH') this.sell(); else if (c === 'KeyZ') store.set({ workshop: !st.workshop }); else if (c === 'KeyJ') this.soak(); else if (c === 'KeyK') store.set({ help: !st.help });
       else if (this.walking && c === 'ArrowUp') this.setAuto(.5, 0); else if (this.walking && c === 'ArrowDown') this.setAuto(-.5, 0); else if (this.walking && c === 'ArrowLeft') this.setAuto(0, .25); else if (this.walking && c === 'ArrowRight') this.setAuto(0, -.25);
-      else if (c === 'KeyQ' && this.rig) { this.rig.warp = clamp(this.rig.warp + 10, 25, 140); this.toast(`Warp ${this.rig.warp} m — the trawl will run deeper`); } else if (c === 'KeyE' && this.rig) { this.rig.warp = clamp(this.rig.warp - 10, 25, 140); this.toast(`Warp ${this.rig.warp} m — the trawl will run shallower`); }
+      else if (c === 'KeyQ' && this.rig) this.trawlDepth(e.shiftKey ? 3 : 1); else if (c === 'KeyE' && this.rig) this.trawlDepth(e.shiftKey ? -3 : -1); else if (c === 'KeyX') this.trawlAuto();
       else if (c === 'KeyC' || /^Digit[1-7]$/.test(c) || c === 'KeyR') setTimeout(() => this.syncMode(), 30);
     });
     addEventListener('keyup', (e) => { this.keysDown.delete(e.code); if (e.code === 'KeyF') this.release(); });
@@ -125,6 +128,7 @@ export class World {
     const pool = picks.map((f) => ({ ref: f, sp: f.sp.id, len: f.sp.len * f.lenK, depth: -f.y, x: (f.x - fp.cx) / Math.max(net.radius, .5), z: (f.z - fp.cz) / Math.max(net.radius, .5), speed: f.sp.speed, panic: f.sp.panic, dive: f.sp.dive, flee: f.sp.flee, shy: f.sp.shy }));
     const deepNear = near && near.d > CAST_MAX_DEPTH && nd < near.rad + net.radius;
     const pending = { type: 'cast', net, meshIdx: net.meshIdx, comp, env, pool, mult, effR: fp.effR, R: net.radius, openFrac: fp.openFrac, holes: fp.holes, quality: q, sinkRate: net.sinkRate, seabed, label: lab, boatSpeed: Math.abs(this.boat.speed), noise: this.lastNoise, deepNear: !!deepNear, closeBoost: 1, spin: fp.spin };
+    if (!pool.length) { cn.autoHaulAt = this.t + 1.7; this.pending = null; this.cd = 3; this.toast('The net settles over empty water — no fish under it. Hauling it back…'); store.set({ netState: { text: 'Empty water under the net — hauling' } }); return; }
     const e = estimatePool(pool, net, net.meshIdx, .7);
     this.queueGame(pending, { fish: Math.round(e.fish * mult), value: Math.round(e.value * mult) }, 1.1);
     this.toast(fp.openFrac > .8 ? 'The net opened well and is sinking…' : fp.openFrac > .5 ? 'The net only half opened — sinking with folds…' : 'The net landed bunched up — it will not cover much');
@@ -136,13 +140,32 @@ export class World {
     else if (m === 'trawl') this.haulTrawl(); else if (m === 'seine') this.haulSeine(); else this.haulGill();
   }
   /* ---------- trawl ---------- */
-  setTrawl() { if (this.rig) { return this.toast('Trawl already out — keep towing, then haul (G). Q / E adjust the warp'); } const net = this.net(), comp = compat(net, this.boatDef); this.rig = new TrawlRig(this.S, net, net.meshIdx, comp); this.rigT = 0; store.set({ rig: { type: 'trawl' } }); this.toast(`Trawl shot away. It needs ~16 s and 2–4 knots to open. ${comp.warning ? 'The boat feels it already… ' : ''}Q/E = warp length (depth), G = haul back.`); }
+  setTrawl() {
+    if (this.rig) { return this.toast('Trawl already out — keep towing, then haul (G). Q / E or the depth buttons set the trawl depth, X follows the school'); }
+    const net = this.net(), comp = compat(net, this.boatDef); this.rig = new TrawlRig(this.S, net, net.meshIdx, comp); this.rigT = 0; this.trawlPending = false;
+    const tgt = this.bestSchoolAhead(); this.rig.tgt = tgt ? clamp(tgt.d, 1, 12) : 5; this.rig.auto = !!tgt; store.set({ rig: { type: 'trawl' }, trawl: { depth: this.rig.tgt, auto: this.rig.auto } });
+    this.toast(`Trawl shot away. It needs ~16 s and 2–4 knots to open. ${tgt ? 'Following the school ahead' : 'Set the depth with Q / E'} — watch the fish finder. G = haul back.`);
+  }
+  trawlDepth(delta) { const r = this.rig; if (!r || r.hauling) return; r.auto = false; r.setDepth(r.tgt + delta); store.set({ trawl: { depth: r.tgt, auto: false } }); }
+  trawlAuto() { const r = this.rig; if (!r || r.hauling) return this.toast('Shoot the trawl first (F)'); r.auto = !r.auto; store.set({ trawl: { depth: r.tgt, auto: r.auto } }); this.toast(r.auto ? 'Depth follow ON — the winch tracks the school ahead' : 'Depth follow OFF — manual depth (Q / E)'); }
+  /* the school the boat is heading for: biggest, closest, inside the swept path */
+  bestSchoolAhead() {
+    const b = this.boat, fx = -Math.sin(b.heading), fz = -Math.cos(b.heading); let best = null, bs = 0;
+    for (const s of this.fw.schools) { if (s.lone) continue; const dx = s.x - b.position.x, dz = s.z - b.position.z, ax = dx * fx + dz * fz, lat = Math.abs(dx * -fz + dz * fx); if (ax < -10 || ax > 170 || lat > s.rad + 22) continue; const sc = s.fish.length / (1 + Math.max(0, ax) / 45) / (1 + lat / 25); if (sc > bs) { bs = sc; best = { s, d: s.d, ax, lat, n: s.fish.length, sp: s.sp }; } }
+    return best;
+  }
+  catchPop(sp) { this.feed = [...this.feed.filter((f) => Date.now() - f.t < 3200).slice(-4), { k: Math.random(), sp: sp.id, t: Date.now() }]; store.set({ feed: this.feed }); }
   haulTrawl() {
-    if (!this.rig) return this.toast('Shoot the trawl first (F)'); const r = this.rig, net = r.net, comp = r.comp, env = seaEnv(), seabed = Math.max(14, 1.3 * (this.S.P.hs || 0) + 6);
-    const bag = r.bag, pool = bag.map((b) => ({ ref: b.f, sp: b.f.sp.id, len: b.f.sp.len * b.f.lenK, depth: b.depth, speed: b.f.sp.speed, shy: b.f.sp.shy }));
+    if (!this.rig) return this.toast('Shoot the trawl first (F)'); if (this.rig.hauling) return;
+    this.rig.haulIn(); this.trawlPending = true; store.set({ trawl: { depth: 0, auto: false } }); this.toast(this.rig.bag.length ? 'Hauling the trawl — the codend is heavy…' : 'Hauling the trawl back…');
+  }
+  openTrawlGame() {
+    const r = this.rig, net = r.net, comp = r.comp, env = seaEnv(), seabed = Math.max(14, 1.3 * (this.S.P.hs || 0) + 6), bag = r.bag, pool = bag.map((b) => ({ ref: b.f, sp: b.f.sp.id, len: b.f.sp.len * b.f.lenK, depth: b.depth, speed: b.f.sp.speed, shy: b.f.sp.shy }));
     this.pending = { type: 'trawl', net, meshIdx: net.meshIdx, comp, env, pool, mult: 1, opening: r.opening, W: r.W || net.mouthW, H: r.H || net.mouthH, depth: r.depth, seabed, towSpeed: this.towAvg || 1, boatSpeed: Math.abs(this.boat.speed), seaDiff: env.seaDiff, rigTime: this.rigT, snags: r.snag };
     this.gameActive = true; store.set({ game: this.pending, estimate: null });
   }
+  /* nothing in the net: no mini-game, just bring it aboard */
+  emptyHaul(what) { this.toast(`${what} comes up empty — nothing in it. Try another spot`); chime('soft'); store.set({ netState: null }); }
   /* ---------- purse seine ---------- */
   setSeine() {
     const net = this.net();
@@ -167,7 +190,8 @@ export class World {
     store.set({ netState: { text: 'Closing the ring · pulling the purse line' } }); this.gulls.event('escape', cx, cz); this.fw.scare(cx, cz, L / 3, .5);
   }
   openSeineGame() {
-    const d = this.seineData; this.seineState = 'pursing';
+    const d = this.seineData; if (!d.pool.length) { this.dying.push({ w: this.wall, buoy: this.buoy, t: 0, from: this.wall.pull }); this.wall = null; this.buoy = null; this.seineState = 'idle'; store.set({ rig: null, netState: null }); return this.emptyHaul('The seine'); }
+    this.seineState = 'pursing';
     this.pending = { type: 'seine', net: d.net, meshIdx: d.net.meshIdx, comp: d.comp, env: d.env, pool: d.pool, mult: d.mult, gap: d.gap, L: d.L, seabed: 14, inside: d.inside }; this.gameActive = true; store.set({ game: this.pending, netState: null });
   }
   haulSeine() {
@@ -199,6 +223,7 @@ export class World {
   haulGill() {
     const [x, z] = this.stern(0); const w = this.gill.find((g) => g.pts.some((p) => Math.hypot(p.x - x, p.z - z) < 40)); if (!w) return this.toast(this.gill.length ? 'Get within 40 m of a gillnet buoy to haul it' : 'No gillnet set — press F while driving to lay one'); if (this.layingGill) { this.endBuoy(this.layingGill); this.layingGill = null; }
     const net = w.net, env = seaEnv(), comp = compat(net, this.boatDef), pool = this.gillCatchPool(w); const bycatch = R() < .12 * Math.min(w.hours / 6, 1.5) ? 1 + (R() * 2 | 0) : 0;
+    if (!pool.length && !bycatch) { w.dispose(); w.buoyA && w.buoyA.dispose(); w.buoyB && w.buoyB.dispose(); this.gill = this.gill.filter((g) => g !== w); store.set({ rig: this.gill.length ? { type: 'gill' } : null }); return this.emptyHaul('The gillnet'); }
     this.pending = { type: 'gill', net, meshIdx: net.meshIdx, comp, env, pool, mult: 1, hours: w.hours, bycatch, wall: w, seabed: 14 }; this.gameActive = true; store.set({ game: this.pending, estimate: this.gillEstimate() });
   }
 
@@ -209,7 +234,7 @@ export class World {
     for (const k in caught) { n += caught[k]; v += caught[k] * SPECIES[k].value; hold[k] = (hold[k] || 0) + caught[k]; }
     if (g.pool && res.caughtIdx) { const refs = res.caughtIdx.map((i) => g.pool[i] && g.pool[i].ref).filter(Boolean); this.fw.removeFish(refs); if (g.mult > 1 && g.type === 'cast' && this.cast && this.cast.footprint) { const extra = Math.round(refs.length * (g.mult - 1)), c = this.cast.footprint; this.fw.removeFish(this.fw.fishNear(c.cx, c.cz, c.effR, 14).slice(0, extra)); } }
     if (g.type === 'cast' && this.cast) { this.cast.driven = null; this.cast.hauling = true; this.cast.closeTarget = 1; }
-    if (g.type === 'trawl') { this.rig.dispose(); this.rig = null; store.set({ rig: null }); }
+    if (g.type === 'trawl') { this.rig.dispose(); this.rig = null; this.trawlPending = false; store.set({ rig: null, trawl: null }); }
     if (g.type === 'seine') { this.fw.removeFish(g.pool.filter((p, i) => (res.caughtIdx || []).includes(i)).map((p) => p.ref)); this.dying.push({ w: this.wall, buoy: this.buoy, t: 0, from: this.wall.pull }); this.wall = null; this.buoy = null; this.seineState = 'idle'; store.set({ rig: null }); }
     if (g.type === 'gill') { g.wall.dispose(); g.wall.buoyA && g.wall.buoyA.dispose(); g.wall.buoyB && g.wall.buoyB.dispose(); this.gill = this.gill.filter((w) => w !== g.wall); store.set({ rig: this.gill.length ? { type: 'gill' } : null }); }
     const streak = res.perfect ? store.get().streak + 1 : n > 0 ? store.get().streak : 0, bonus = 1 + Math.min(streak, 6) * .05; v *= bonus;
@@ -225,34 +250,3 @@ export class World {
     if (this.paused && !this._manual) return;
     this.t += dt; const S = this.S, st = store.get(), boat = this.boat, C = S.CTL;
     this.cd = Math.max(0, this.cd - dt);
-    if ((S.getMode() === 6) !== this.walking) this.syncMode();
-    /* walking */
-    if (this.walking) {
-      const inp = this.gameActive || st.workshop ? { fwd: 0, strafe: 0, run: false } : this.walkInput();
-      this.walker.step(dt, inp.fwd, inp.strafe, S.DECK.yaw, inp.run); S.DECK.eye.set(this.walker.x, this.walker.eyeY, this.walker.z); C.override = true; C.power = this.auto.power; C.rudder = this.auto.rudder;
-    }
-    const comp = this.net() ? compat(this.net(), this.boatDef) : { speedMul: 1, strain: 0, openMul: 1 };
-    /* drag and engine: towing nets slow the boat visibly */
-    let towK = 1, strain = 0;
-    if (this.rig) { towK = comp.speedMul; strain = comp.strain; }
-    if (this.wall && this.seineState === 'laying') { towK = Math.min(towK, clamp(1.05 - .35 * comp.strain - .1 * this.wall.length() / this.wall.net.length, .3, 1)); strain = Math.max(strain, comp.strain * .6); }
-    if (this.cast) { const F = this.cast.dragN(Math.abs(boat.speed)); if (F > 0) { towK = Math.min(towK, 1 / (1 + F / (this.boatDef.pull * 1000 * .22))); strain = Math.max(strain, clamp(F / (this.boatDef.pull * 1000), 0, 1)); } }
-    this.dragK += (towK - this.dragK) * Math.min(1, dt * 2); C.k = this.boatDef.vmaxK * this.dragK; this.strain = strain;
-    if (eng && AC) { const pw = Math.abs(boat.power); eng.o.frequency.value += ((38 + pw * 7 + strain * 18) - eng.o.frequency.value) * .1; eng.g.gain.value += ((.012 + Math.min(pw / 8, 1) * .03 + strain * .02) * (document.hidden ? 0 : 1) - eng.g.gain.value) * .1; eng.f.frequency.value = 130 + strain * 140 + pw * 12; }
-    /* noise that fish hear and feel: speed, engine, wake, towing */
-    const spd = Math.abs(boat.speed), noise = (Math.pow(spd / 6, 1.4) + Math.abs(boat.power) / 8 * .35 + (this.rig ? .22 : 0) + strain * .3) * this.boatDef.noise; this.lastNoise = noise;
-    const netThreat = this.cast && this.cast.landed ? { x: this.cast.P[0].x, z: this.cast.P[0].z, r: this.cast.rimRadius() * .8, depth: this.cast.rimDepth() } : this.cast ? { x: this.cast.P[0].x, z: this.cast.P[0].z, r: this.cast.R * .5, depth: 0 } : null;
-    this.fw.update(dt, { boat, noise, netThreat });
-    for (const e of this.fw.events.splice(0)) { if (e.type === 'flee' && !this.gameActive) this.gulls.event('escape', e.x, e.z); }
-    this.gulls.update(dt, boat);
-    /* meter */
-    if (this.charging) { this.chargeT += dt; this.meter = .5 - .5 * Math.cos(this.chargeT * TAU / 1.5); store.set({ charge: this.meter }); }
-    /* queued cut-away game */
-    if (this.startAt && this.t >= this.startAt) { this.startAt = 0; if (this.pending && this.cast && !this.cast.hauling) { this.gameActive = true; this.charging = false; store.set({ game: this.pending, estimate: this.pendingEst, charge: null, netState: null }); } else this.pending = null; }
-    /* cast net */
-    if (this.cast) {
-      const eye = this.deckEyeWorld(), hand = eye.add(new V3(0, -.55, 0)); const G = window.__game;
-      if (this.gameActive && this.pending && this.pending.type === 'cast' && G && G.zr !== undefined) this.cast.drive(G.zr, G.c || 0);
-      this.cast.step(Math.min(dt, .05), hand);
-      if (this.cast.done) { this.cast.dispose(); this.cast = null; this.cd = .5; if (!this.gameActive) store.set({ netState: null }); }
-      else if (this.cast.landed && !this.gameActive && !this.startAt && this.cast.settled && !this.cast.hauling && this.cast.sunkT > 26) this.cast.hauling = true;

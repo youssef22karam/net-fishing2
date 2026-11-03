@@ -11,42 +11,28 @@ import * as THREE from 'three';
 import { clamp, lerp, sstep, TAU, seaEnv } from './config.js';
 import { meshDrag } from './netgen.js';
 
-let _tex = null;
-export function netTexture() {
-  if (_tex) return _tex;
-  const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
-  x.strokeStyle = '#fff'; x.fillStyle = '#fff'; x.lineWidth = 3.2; x.lineCap = 'round'; x.beginPath();
-  x.moveTo(0, 0); x.lineTo(64, 64); x.moveTo(64, 0); x.lineTo(0, 64); x.moveTo(-32, 32); x.lineTo(32, 96); x.moveTo(32, -32); x.lineTo(96, 32); x.moveTo(32, 96); x.lineTo(96, 32); x.moveTo(-32, 32); x.lineTo(32, -32); x.stroke();
-  for (const [px, py] of [[32, 32], [0, 0], [64, 0], [0, 64], [64, 64]]) { x.beginPath(); x.arc(px, py, 4.2, 0, 7); x.fill(); }   // knots
-  _tex = new THREE.CanvasTexture(c); _tex.wrapS = _tex.wrapT = THREE.RepeatWrapping; _tex.anisotropy = 4; _tex.colorSpace = THREE.SRGBColorSpace; return _tex;
-}
-/* depth-faded unlit material: fades toward water colour below the surface */
-export function netMat(color, opts = {}) {
-  const m = new THREE.MeshBasicMaterial({ color, map: opts.noTex ? null : netTexture(), transparent: true, depthWrite: false, side: THREE.DoubleSide, ...opts.m });
-  m.onBeforeCompile = (sh) => {
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying float vFade;').replace('#include <begin_vertex>', '#include <begin_vertex>\nvec4 wp=vec4(transformed,1.0);\n#ifdef USE_INSTANCING\nwp=instanceMatrix*wp;\n#endif\nwp=modelMatrix*wp;vFade=clamp(1.2+wp.y*.06,.45,1.);');
-    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vFade;').replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb=mix(vec3(.03,.2,.3),diffuseColor.rgb,vFade);diffuseColor.a*=mix(.62,1.,vFade);');
-  };
-  return m;
-}
+import { netMaterial, litMaterial, fishGeometry, fishMaterial } from './underwater.js';
+import { SPECIES } from './config.js';
+/* visual twine half-width (m). Real twine is nearly invisible from the surface, so it is exaggerated just enough to read under water. */
+export const netTwine = (net) => clamp(.011 + net.twineMm * .0032, .014, .05);
 export const visCell = (net, mi) => .09 + net.mesh[mi] * .0032;
 
 /* polar triangulated mesh (apex + K rings x M ribs) */
-export function polarMesh(K, M, cell, R, color) {
+export function polarMesh(K, M, cell, R, color, tw = .02) {
   const N = 1 + K * M, pos = new Float32Array(N * 3), uv = new Float32Array(N * 2), idx = [];
   const ix = (r, i) => (r === 0 ? 0 : 1 + (r - 1) * M + (i % M));
   const U = Math.max(4, Math.round(TAU * R / cell / 2) * 2);
   for (let r = 1; r <= K; r++) for (let i = 0; i < M; i++) { const k = ix(r, i); uv[k * 2] = i / M * U; uv[k * 2 + 1] = r / K * R / cell; }
   for (let r = 1; r <= K; r++) for (let i = 0; i < M; i++) { if (r === 1) idx.push(0, ix(1, i), ix(1, i + 1)); else idx.push(ix(r - 1, i), ix(r, i), ix(r, i + 1), ix(r - 1, i), ix(r, i + 1), ix(r - 1, i + 1)); }
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); g.setIndex(idx);
-  const m = new THREE.Mesh(g, netMat(color)); m.frustumCulled = false; m.renderOrder = 4; return { mesh: m, pos, ix };
+  const m = new THREE.Mesh(g, netMaterial(color, tw / cell)); m.frustumCulled = false; m.renderOrder = .55; return { mesh: m, pos, ix };
 }
 
 /* a rope = instanced cylinders laid along a polyline (so it has real thickness, unlike GL lines) */
 class Rope {
   constructor(max, radius, color) {
-    this.m = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 5, 1, true), netMat(color, { noTex: true, m: { side: THREE.FrontSide } }), max);
-    this.m.frustumCulled = false; this.m.renderOrder = 5; this.m.count = 0; this.max = max; this.r = radius; this.d = new THREE.Object3D(); this.up = new THREE.Vector3(0, 1, 0); this.v = new THREE.Vector3();
+    this.m = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 6, 1, true), litMaterial(color, 1, .15), max);
+    this.m.frustumCulled = false; this.m.renderOrder = .6; this.m.count = 0; this.max = max; this.r = radius; this.d = new THREE.Object3D(); this.up = new THREE.Vector3(0, 1, 0); this.v = new THREE.Vector3();
   }
   /* pts: flat array [x,y,z,...] with n points */
   set(pts, n, closed = false) {
@@ -57,9 +43,16 @@ class Rope {
     }
     this.m.count = c; this.m.instanceMatrix.needsUpdate = true;
   }
+  /* independent segments: [ax,ay,az,bx,by,bz, ...] */
+  segs(pts, n) {
+    const d = this.d, v = this.v; let c = 0;
+    for (let i = 0; i < n && c < this.max; i++) { const a = i * 6; v.set(pts[a + 3] - pts[a], pts[a + 4] - pts[a + 1], pts[a + 5] - pts[a + 2]); const len = v.length(); if (len < 1e-4) continue;
+      d.position.set((pts[a] + pts[a + 3]) / 2, (pts[a + 1] + pts[a + 4]) / 2, (pts[a + 2] + pts[a + 5]) / 2); d.quaternion.setFromUnitVectors(this.up, v.multiplyScalar(1 / len)); d.scale.set(this.r, len, this.r); d.updateMatrix(); this.m.setMatrixAt(c++, d.matrix); }
+    this.m.count = c; this.m.instanceMatrix.needsUpdate = true;
+  }
 }
-const ball = (n, r, color, sy = 1) => { const m = new THREE.InstancedMesh(new THREE.SphereGeometry(r, 7, 5), netMat(color, { noTex: true, m: { side: THREE.FrontSide } }), n); m.frustumCulled = false; m.renderOrder = 5; m.count = 0; m.userData.sy = sy; return m; };
-const disposeGroup = (S, group) => { S.scene.remove(group); group.traverse((o) => { o.geometry && o.geometry.dispose(); }); };
+const ball = (n, r, color, sy = 1, kind = 3) => { const m = new THREE.InstancedMesh(new THREE.SphereGeometry(r, 10, 8), litMaterial(color, kind, .6), n); m.frustumCulled = false; m.renderOrder = .62; m.count = 0; m.userData.sy = sy; return m; };
+const disposeGroup = (S, group) => { S.scene.remove(group); group.traverse((o) => { o.geometry && o.geometry.dispose(); o.material && o.material.dispose && o.material.dispose(); }); };
 
 /* ============================================================ CAST NET ============================================================ */
 export class CastNet {
@@ -85,16 +78,15 @@ export class CastNet {
     const ix = (r, i) => 1 + (r - 1) * M + (i % M); this.ix = ix;
     for (let i = 0; i < M; i++) this.C.push([0, ix(1, i), R / K * 1.18, 0]);
     for (let r = 1; r <= K; r++) for (let i = 0; i < M; i++) { if (r < K) this.C.push([ix(r, i), ix(r + 1, i), R / K * 1.18, 0]); this.C.push([ix(r, i), ix(r, i + 1), TAU * R * (r / K) / M * 1.0, 1]); }
-    const cell = visCell(net, meshIdx), pm = polarMesh(K, M, cell, R, net.material.color); this.pm = pm; this.mesh = pm.mesh;
+    const cell = visCell(net, meshIdx), pm = polarMesh(K, M, cell, R, net.material.color, netTwine(net)); this.pm = pm; this.mesh = pm.mesh;
     this.group = new THREE.Group(); this.group.add(this.mesh);
-    this.rim = new Rope(M, Math.max(.012, net.ropeMm * .0011), 0x2b2b2b); this.rimPts = new Float32Array(M * 3);
-    this.hl = new Rope(24, Math.max(.01, net.ropeMm * .0008), 0xcaa86a); this.hlPts = new Float32Array(25 * 3);
+    this.rim = new Rope(M, Math.max(.016, net.ropeMm * .0013), 0x4a4d52); this.rimPts = new Float32Array(M * 3);
+    this.hl = new Rope(24, Math.max(.012, net.ropeMm * .0009), 0xd9bd7e); this.hlPts = new Float32Array(25 * 3);
     const lm = .8 * W / net.sinkers, sr = Math.max(.024, Math.cbrt(lm / (11340 * 4.19)) * 3.4);
-    this.sink = ball(net.sinkers, sr, net.sinkerColor); this.group.add(this.sink);
-    const bg = new THREE.BufferGeometry(); this.bpos = new Float32Array(Math.ceil(M / 2) * 6); bg.setAttribute('position', new THREE.BufferAttribute(this.bpos, 3));
-    this.brails = new THREE.LineSegments(bg, new THREE.LineBasicMaterial({ color: 0xd8c690, transparent: true, opacity: .8 })); this.brails.frustumCulled = false; this.brails.renderOrder = 5;
-    this.float = new THREE.Mesh(new THREE.SphereGeometry(.09, 8, 6), new THREE.MeshBasicMaterial({ color: net.floatColor })); this.float.renderOrder = 6;
-    this.group.add(this.rim.m, this.hl.m, this.brails, this.float);
+    this.sink = ball(net.sinkers, sr * 1.15, 0x6b7078, 1, 4); this.group.add(this.sink);
+    this.bpos = new Float32Array(Math.ceil(M / 2) * 6); this.brails = new Rope(Math.ceil(M / 2), Math.max(.008, net.ropeMm * .0006), 0xe3cf98);
+    this.float = new THREE.Mesh(new THREE.SphereGeometry(.09, 12, 9), litMaterial(net.floatColor, 3, .8)); this.float.renderOrder = .62;
+    this.group.add(this.rim.m, this.hl.m, this.brails.m, this.float);
     S.scene.add(this.group); this.dummy = new THREE.Object3D(); this.sync();
   }
   /* the 2D cut-away drives the 3D net during the haul so both show the same thing */
@@ -170,7 +162,7 @@ export class CastNet {
     for (let i = 0; i < M; i++) { const p = P[this.ix(K, i)]; this.rimPts.set([p.x, p.y, p.z], i * 3); } this.rim.set(this.rimPts, M, true);
     const ns = this.net.sinkers, d = this.dummy; d.quaternion.identity(); for (let k = 0; k < ns; k++) { const t = k / ns * M, i = Math.floor(t), f = t - i, a = P[this.ix(K, i)], b = P[this.ix(K, i + 1)]; d.position.set(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f - .025, a.z + (b.z - a.z) * f); d.scale.set(1, 1.35, 1); d.updateMatrix(); this.sink.setMatrixAt(k, d.matrix); }
     this.sink.count = ns; this.sink.instanceMatrix.needsUpdate = true;
-    for (let k = 0, j = 0; k < M; k += 2, j++) { const p = P[this.ix(K, k)], a = P[0]; this.bpos.set([p.x, p.y, p.z, a.x, a.y, a.z], j * 6); } this.brails.geometry.attributes.position.needsUpdate = true;
+    for (let k = 0, j = 0; k < M; k += 2, j++) { const p = P[this.ix(K, k)], a = P[0]; this.bpos.set([p.x, p.y, p.z, a.x, a.y, a.z], j * 6); } this.brails.segs(this.bpos, Math.ceil(M / 2));
     /* handline: a rope with real slack — it hangs in a catenary while the net is flying / sinking and straightens when it takes load */
     const a = P[0], hd = this.hand, dist = Math.hypot(a.x - hd.x, a.y - hd.y, a.z - hd.z), slack = Math.sqrt(Math.max(0, this.L * this.L - dist * dist)) * .35;
     for (let i = 0; i < 25; i++) { const t = i / 24; this.hlPts.set([hd.x + (a.x - hd.x) * t, hd.y + (a.y - hd.y) * t - slack * 4 * t * (1 - t) * (a.y > 0 ? 1 : .35), hd.z + (a.z - hd.z) * t], i * 3); } this.hl.set(this.hlPts, 25);
@@ -187,11 +179,11 @@ export class WallNet {
     const MAXP = this.MAXP, g = new THREE.BufferGeometry(); this.pos = new Float32Array(MAXP * ROWS * 3); this.uv = new Float32Array(MAXP * ROWS * 2); const idx = [];
     for (let i = 0; i < MAXP - 1; i++) for (let j = 0; j < ROWS - 1; j++) { const a = i * ROWS + j, b = a + ROWS; idx.push(a, a + 1, b, a + 1, b + 1, b); }
     g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3)); g.setAttribute('uv', new THREE.BufferAttribute(this.uv, 2)); g.setIndex(idx); g.setDrawRange(0, 0);
-    this.mesh = new THREE.Mesh(g, netMat(kind === 'gill' ? 0xd7e8d0 : net.material.color)); this.mesh.frustumCulled = false; this.mesh.renderOrder = 4;
-    this.nf = Math.min(64, net.floats); this.fl = ball(this.nf, kind === 'gill' ? .1 : .14, net.floatColor);
-    this.ns = Math.min(64, net.sinkers); this.sk = ball(this.ns, .06, net.sinkerColor);
-    this.top = new Rope(MAXP, Math.max(.012, net.ropeMm * .0012), 0xffd7a0); this.bot = new Rope(MAXP, Math.max(.014, net.ropeMm * .0014), 0x2b2b2b);
-    this.purse = new Rope(MAXP, .016, 0xb7bcc2); this.tp = new Float32Array(MAXP * 3); this.bp = new Float32Array(MAXP * 3); this.pp = new Float32Array(MAXP * 3);
+    this.cell = visCell(net, meshIdx) * 2.4; this.mesh = new THREE.Mesh(g, netMaterial(kind === 'gill' ? 0xd7e8d0 : net.material.color, netTwine(net) * (kind === 'gill' ? .8 : 1.2) / this.cell, kind === 'gill' ? .85 : 1)); this.mesh.frustumCulled = false; this.mesh.renderOrder = .55;
+    this.nf = Math.min(64, net.floats); this.fl = ball(this.nf, kind === 'gill' ? .1 : .15, net.floatColor, 1, 3);
+    this.ns = Math.min(64, net.sinkers); this.sk = ball(this.ns, .07, 0x6b7078, 1, 4);
+    this.top = new Rope(MAXP, Math.max(.016, net.ropeMm * .0014), 0xf0c98a); this.bot = new Rope(MAXP, Math.max(.018, net.ropeMm * .0016), 0x5a5d62);
+    this.purse = new Rope(MAXP, .02, 0xcdd3d9); this.tp = new Float32Array(MAXP * 3); this.bp = new Float32Array(MAXP * 3); this.pp = new Float32Array(MAXP * 3);
     this.group = new THREE.Group(); this.group.add(this.mesh, this.fl, this.sk, this.top.m, this.bot.m, this.purse.m); S.scene.add(this.group); this.dummy = new THREE.Object3D();
     this.cell = visCell(net, meshIdx) * 2.4; this.TOP = []; this.BOT = []; for (let i = 0; i < MAXP; i++) { this.TOP.push([0, 0, 0]); this.BOT.push([0, 0, 0]); }
   }
@@ -239,7 +231,7 @@ export class WallNet {
 export class Buoy {
   constructor(S, x, z, color = 0xff5a1f) {
     this.S = S; this.x = x; this.z = z; this.g = new THREE.Group();
-    const m = (c) => new THREE.MeshBasicMaterial({ color: c });
+    const m = (c) => litMaterial(c, 0, .5);
     const fl = new THREE.Mesh(new THREE.CylinderGeometry(.34, .26, .62, 10), m(color)); fl.position.y = .1;
     const band = new THREE.Mesh(new THREE.CylinderGeometry(.345, .345, .14, 10), m(0xffffff)); band.position.y = .12;
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(.025, .025, 3.2, 5), m(0x2b2b2b)); pole.position.y = 1.9;
@@ -251,29 +243,29 @@ export class Buoy {
   dispose() { disposeGroup(this.S, this.g); }
 }
 
-/* ============================================================ TRAWL ============================================================ */
+/* ============================================================ TRAWL ============================================================
+   Otter trawl: two warps pay out from the stern to steel otter boards that kite the wings apart, wings + square + belly + codend of knotted mesh with
+   lengthwise strengthening ropes and codend rings, head rope with floats, foot rope with lead.  Depth is set with the winch (this.tgt, metres): the warp pays out or
+   hauls in to hold it.  Caught fish are shown swimming into the codend and stay visible inside the bag. */
 export class TrawlRig {
   constructor(S, net, meshIdx, comp) {
-    this.S = S; this.net = net; this.mi = meshIdx; this.comp = comp; this.hist = []; this.warp = 45; this.deploy = 0; this.depth = 0; this.bag = []; this.sweepT = 0; this.snag = 0; this.K = 8; this.M = 14; this.opening = 0; this.spread = 0; this.t = 0; this.vDepth = 0;
+    this.S = S; this.net = net; this.mi = meshIdx; this.comp = comp; this.hist = []; this.warp = 30; this.deploy = 0; this.depth = 0; this.bag = []; this.snag = 0; this.K = 8; this.M = 16; this.opening = 0; this.spread = 0; this.t = 0; this.vDepth = 0;
+    this.tgt = 5; this.auto = false; this.hauling = false; this.hauled = false; this.dead = false; this.cod = { x: 0, y: -5, z: 0 }; this.seabed = 14; this.NB = 64;
     const N = (this.K + 1) * this.M, g = new THREE.BufferGeometry(); this.pos = new Float32Array(N * 3); const uv = new Float32Array(N * 2), idx = [];
-    for (let r = 0; r <= this.K; r++) for (let i = 0; i < this.M; i++) { uv[(r * this.M + i) * 2] = i / this.M * Math.max(6, net.mouthW * 1.2); uv[(r * this.M + i) * 2 + 1] = r * 1.2; }
+    for (let r = 0; r <= this.K; r++) for (let i = 0; i < this.M; i++) { uv[(r * this.M + i) * 2] = i / this.M * Math.max(10, net.mouthW * 1.5); uv[(r * this.M + i) * 2 + 1] = r * 1.5; }
     for (let r = 0; r < this.K; r++) for (let i = 0; i < this.M; i++) { const a = r * this.M + i, b = r * this.M + (i + 1) % this.M, c = a + this.M, d = b + this.M; idx.push(a, c, b, b, c, d); }
     g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3)); g.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); g.setIndex(idx);
-    this.mesh = new THREE.Mesh(g, netMat(net.material.color)); this.mesh.frustumCulled = false; this.mesh.renderOrder = 4;
-    this.rope = { warpL: new Rope(16, .03, 0xdad2b8), warpR: new Rope(16, .03, 0xdad2b8), head: new Rope(20, .03, 0xffd7a0), foot: new Rope(20, .04, 0x2b2b2b), brL: new Rope(2, .02, 0xdad2b8), brR: new Rope(2, .02, 0xdad2b8) };
-    this.nfl = Math.min(40, net.floats); this.fl = ball(this.nfl, .17, net.floatColor); this.nsk = Math.min(40, net.sinkers); this.sk = ball(this.nsk, .13, net.sinkerColor);
-    this.doors = [0, 1].map(() => { const b = new THREE.Mesh(new THREE.BoxGeometry(.12, 1.1, 1.5), netMat(0x7a5a2e, { noTex: true })); b.renderOrder = 5; b.frustumCulled = false; return b; });
-    this.group = new THREE.Group(); this.group.add(this.mesh, this.fl, this.sk, ...Object.values(this.rope).map((r) => r.m), ...this.doors); S.scene.add(this.group); this.dummy = new THREE.Object3D(); this.m = { x: 0, y: 0, z: 0, tx: 0, tz: -1 };
-    this.buf = new Float32Array(30 * 3);
+    this.mesh = new THREE.Mesh(g, netMaterial(net.material.color, .11)); this.mesh.frustumCulled = false; this.mesh.renderOrder = .55;
+    this.rope = { warpL: new Rope(16, .035, 0xcbbf9f), warpR: new Rope(16, .035, 0xcbbf9f), head: new Rope(20, .035, 0xf0c98a), foot: new Rope(20, .045, 0x4b4e54), brL: new Rope(2, .022, 0xcbbf9f), brR: new Rope(2, .022, 0xcbbf9f) };
+    this.lines = [0, 1, 2, 3].map(() => new Rope(this.K, .026, 0xd9b36b)); this.rings = [0, 1, 2].map(() => new Rope(this.M, .03, 0x8a6d3b));
+    this.lineBuf = new Float32Array((this.K + 1) * 3); this.ringBuf = new Float32Array(this.M * 3);
+    this.nfl = Math.min(40, net.floats); this.fl = ball(this.nfl, .17, net.floatColor, 1, 3); this.nsk = Math.min(40, net.sinkers); this.sk = ball(this.nsk, .13, 0x6b7078, 1, 4);
+    this.doors = [0, 1].map(() => { const b = new THREE.Mesh(new THREE.BoxGeometry(.1, 1.1, 1.5), litMaterial(0x7a8590, 2, .5)); b.renderOrder = .6; b.frustumCulled = false; return b; });
+    // fish inside the codend
+    const fg = fishGeometry(), NB = this.NB; this.bAC = new THREE.InstancedBufferAttribute(new Float32Array(NB * 3), 3); this.bAB = new THREE.InstancedBufferAttribute(new Float32Array(NB * 3), 3); this.bAF = new THREE.InstancedBufferAttribute(new Float32Array(NB * 4), 4);
+    fg.setAttribute('aCol', this.bAC); fg.setAttribute('aBel', this.bAB); fg.setAttribute('aFx', this.bAF);
+    this.bagMesh = new THREE.InstancedMesh(fg, fishMaterial(), NB); this.bagMesh.frustumCulled = false; this.bagMesh.renderOrder = .5; this.bagMesh.count = 0; this.bagFilled = 0;
+    this.group = new THREE.Group(); this.group.add(this.mesh, this.fl, this.sk, this.bagMesh, ...Object.values(this.rope).map((r) => r.m), ...this.lines.map((r) => r.m), ...this.rings.map((r) => r.m), ...this.doors); S.scene.add(this.group); this.dummy = new THREE.Object3D(); this.m = { x: 0, y: 0, z: 0, tx: 0, tz: -1 };
+    this.buf = new Float32Array(30 * 3); this.ringC = []; this.ringR = []; for (let r = 0; r <= this.K; r++) { this.ringC.push([0, 0, 0]); this.ringR.push(1); } this.tn = { nx: 1, nz: 0, tx: 0, tz: 1 };
   }
   trail(dist) { // point 'dist' metres back along the boat's track
-    const H = this.hist; let acc = 0; for (let i = H.length - 1; i > 0; i--) { const a = H[i], b = H[i - 1], d = Math.hypot(a.x - b.x, a.z - b.z); if (acc + d >= dist) { const f = (dist - acc) / (d || 1); return { x: a.x + (b.x - a.x) * f, z: a.z + (b.z - a.z) * f }; } acc += d; }
-    const l = H[0] || { x: 0, z: 0 }; return { x: l.x, z: l.z, short: true };
-  }
-  fill() { return clamp(this.bag.length / (120 + this.net.mouthW * 14), 0, 1); }
-  update(dt, boat, speed, seabed) {
-    this.t += dt; const hx = boat.position.x + Math.sin(boat.heading) * 3.6, hz = boat.position.z + Math.cos(boat.heading) * 3.6, last = this.hist[this.hist.length - 1];
-    if (!last || Math.hypot(hx - last.x, hz - last.z) > .6) { this.hist.push({ x: hx, z: hz }); if (this.hist.length > 700) this.hist.shift(); }
-    this.deploy = Math.min(1, this.deploy + dt / 16); const net = this.net, c = this.comp;
-    /* the mouth spreads with the square of the water flow through the doors; below ~1 kn the net hangs folded and sinks */
-    this.spread += (clamp(Math.pow(speed / 1.5, 2), .06, 1) - this.spread) * Math.min(1, dt * .5);

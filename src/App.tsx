@@ -8,6 +8,8 @@ import { genNet, compat, compatibleRange, NET_BANDS } from './game/netgen.js';
 import { buildNetPreview } from './game/netPreview.js';
 import CastGame from './games/CastGame';
 import { TrawlGame, SeineGame, GillGame } from './games/OtherGames';
+import { FishFinder } from './ui/FishFinder';
+import { TouchControls, IS_TOUCH } from './ui/Touch';
 
 const world = () => (window as any).nf.world as World;
 const Btn = ({ children, on, active, className = '', ...p }: any) => (
@@ -88,52 +90,59 @@ function ResultPanel() {
   );
 }
 
+const useSmall = () => { const [sm, setSm] = useState(() => innerWidth < 760 || innerHeight < 500); useEffect(() => { const f = () => setSm(innerWidth < 760 || innerHeight < 500); addEventListener('resize', f); return () => removeEventListener('resize', f); }, []); return sm; };
+
 function Hud() {
-  const s = useStore(), net = s.nets[s.method], boat = BOATS[s.boatId], walking = s.walking, holdN = Object.values(s.hold).reduce((a: number, b: any) => a + b, 0);
+  const s = useStore(), small = useSmall(), net = s.nets[s.method], boat = BOATS[s.boatId], walking = s.walking, holdN = Object.values(s.hold).reduce((a: number, b: any) => a + b, 0);
+  const [open, setOpen] = useState(() => !(innerWidth < 760 || innerHeight < 500));
   const c = net ? compat(net, boat) : null, co = s.coach, kn = (v: number) => (v * 1.944).toFixed(1);
   return (
     <>
-      <div className="pe fixed left-3 top-10 w-[262px] rounded-2xl border border-white/20 bg-slate-950/50 p-2.5 text-white backdrop-blur text-[12px] space-y-1.5" data-testid="hud">
-        <div className="flex justify-between items-baseline"><b className="text-base">{fmtMoney(s.cash)}</b><span className="text-[10px] text-sky-200/70">{boat.name.split('·')[0]} · {s.speedKn.toFixed(1)} kn</span></div>
+      <div className="pe fixed left-2 top-9 sm:left-3 sm:top-10 z-20 w-[min(262px,calc(100vw-16px))] max-h-[calc(100vh-60px)] overflow-auto rounded-2xl border border-white/20 bg-slate-950/55 p-2.5 text-white backdrop-blur text-[12px] space-y-1.5" data-testid="hud">
+        <div className="flex items-center justify-between gap-2"><b className="text-base">{fmtMoney(s.cash)}</b><span className="text-[10px] text-sky-200/70 truncate">{boat.name.split('·')[0]} · {s.speedKn.toFixed(1)} kn</span><button className="pe rounded-full border border-white/25 px-2 text-[11px]" onClick={() => setOpen(!open)} aria-label="toggle panel">{open ? '▴' : '▾'}</button></div>
         <div className="flex gap-1 flex-wrap">{METHOD_LIST.map((m) => <Btn key={m.id} active={s.method === m.id} on={() => world().setMethod(m.id)}>{m.short}</Btn>)}</div>
-        {net && <div className="text-[11px] leading-tight text-sky-50/90">{net.name} · {net.sizeLabel}<br />{net.weight.toFixed(1)} kg · mesh <button className="pe underline" onClick={() => world().cycleMesh()}>{net.mesh[net.meshIdx]} mm</button> · {net.material.name}</div>}
+        {open && net && <div className="text-[11px] leading-tight text-sky-50/90">{net.name} · {net.sizeLabel}<br />{net.weight.toFixed(1)} kg · mesh <button className="pe underline" onClick={() => world().cycleMesh()}>{net.mesh[net.meshIdx]} mm</button> · {net.material.name}</div>}
         {c && c.over > .9 && <div className="rounded-lg bg-rose-500/25 border border-rose-300/40 px-2 py-1 text-[10px] leading-tight text-rose-100">⚠ {c.warning}</div>}
-        <div className="flex gap-1 flex-wrap"><Btn on={() => world().goDeck()} active={walking} data-testid="walk-btn">{walking ? 'Back to the wheel (B)' : 'Leave the wheel (B)'}</Btn><Btn on={() => store.set({ workshop: true })}>Workshop (Z)</Btn></div>
+        <div className="flex gap-1 flex-wrap"><Btn on={() => world().goDeck()} active={walking} data-testid="walk-btn">{walking ? 'Back to the wheel (B)' : 'Leave the wheel (B)'}</Btn><Btn on={() => store.set({ workshop: true })}>Workshop (Z)</Btn>{open && <Btn on={() => { const S = (window as any).sea; S.setMode(S.getMode() + 1); world().syncMode(); }}>📷 Camera (C)</Btn>}{open && <Btn active={s.finder} on={() => store.set({ finder: !s.finder })}>Fish finder</Btn>}</div>
         {walking ? (
           <div className="rounded-lg bg-white/10 px-2 py-1 text-[11px] leading-snug" data-testid="autopilot">
-            <div className="flex items-center justify-between"><span>Autopilot throttle</span><span className="font-mono"><button className="pe px-1.5" onClick={() => world().setAuto(-.5, 0)}>−</button>{kn(s.auto.power)} kn<button className="pe px-1.5" onClick={() => world().setAuto(.5, 0)}>+</button></span></div>
-            <div className="flex items-center justify-between"><span>Rudder</span><span className="font-mono"><button className="pe px-1.5" onClick={() => world().setAuto(0, .25)}>◀</button>{s.auto.rudder === 0 ? 'straight' : (s.auto.rudder > 0 ? 'left ' : 'right ') + Math.abs(s.auto.rudder * 100).toFixed(0) + '%'}<button className="pe px-1.5" onClick={() => world().setAuto(0, -.25)}>▶</button></span></div>
-            <div className="text-[10px] text-sky-200/70">W A S D walk · mouse look · Shift run · ↑↓ throttle · ←→ rudder · V creep</div>
+            <div className="flex items-center justify-between"><span>Engine {s.auto.power > 0 ? 'cruise' : 'idle'}</span><span className="font-mono"><button className="pe px-1.5" onClick={() => world().setAuto(-.5, 0)}>−</button>{kn(s.auto.power)} kn<button className="pe px-1.5" onClick={() => world().setAuto(.5, 0)}>+</button></span></div>
+            {s.auto.power > 0 && <div className="flex items-center justify-between"><span>Rudder</span><span className="font-mono"><button className="pe px-1.5" onClick={() => world().setAuto(0, .25)}>◀</button>{s.auto.rudder === 0 ? 'straight' : (s.auto.rudder > 0 ? 'left ' : 'right ') + Math.abs(s.auto.rudder * 100).toFixed(0) + '%'}<button className="pe px-1.5" onClick={() => world().setAuto(0, -.25)}>▶</button></span></div>}
+            {open && <div className="text-[10px] text-sky-200/70">The boat holds still while you walk. WASD walk · mouse look · Shift run · V cruise</div>}
           </div>
-        ) : <div className="text-[10px] text-sky-200/75">At the wheel: W S throttle · A D steer · drag to look. Press B to stand up and walk the boat.</div>}
+        ) : open && <div className="text-[10px] text-sky-200/75">At the wheel: W S throttle · A D steer · drag to look. B stands you up — the engine drops to idle.</div>}
         <div className="flex justify-between items-center border-t border-white/15 pt-1"><span>Hold: {holdN} fish · ${Math.round(s.holdValue)}</span><Btn on={() => world().sell()}>Sell (H)</Btn></div>
         {s.streak > 0 && <div className="text-[10px] text-amber-200">perfect streak ×{s.streak}</div>}
       </div>
-      {co && !s.game && (
-        <div className="fixed right-3 top-10 w-[290px] rounded-2xl border border-white/20 bg-slate-950/50 p-2.5 text-white backdrop-blur text-[11.5px] leading-snug" data-testid="coach">
+      {co && !s.game && !small && (
+        <div className="fixed right-3 top-10 z-10 w-[290px] rounded-2xl border border-white/20 bg-slate-950/50 p-2.5 text-white backdrop-blur text-[11.5px] leading-snug" data-testid="coach">
           <div className="text-[11px] font-semibold text-amber-200 mb-1">How to fish: {METHODS[co.method].name}</div>
           <ol className="space-y-1">{co.steps.map((t: string, i: number) => <li key={i} className={`flex gap-1.5 ${i === co.at ? 'text-white' : i < co.at ? 'text-emerald-200/70' : 'text-sky-100/50'}`}><span className="w-4 shrink-0">{i < co.at ? '✓' : i === co.at ? '▶' : i + 1 + '.'}</span><span className={i === co.at ? 'font-medium' : ''}>{t}</span></li>)}</ol>
         </div>
       )}
-      {s.netState && <div className="fixed left-1/2 -translate-x-1/2 top-12 text-[11px] text-white bg-slate-950/55 backdrop-blur rounded-full px-3 py-1 border border-white/15 max-w-[60vw] text-center" data-testid="netstate">{s.netState.text}</div>}
+      <FishFinder small={small} />
+      {s.feed && s.feed.length > 0 && <div className="pointer-events-none fixed left-1/2 top-24 z-20 flex -translate-x-1/2 flex-col items-center gap-1">{s.feed.map((f: any) => <FeedPop key={f.k} f={f} />)}</div>}
+      {s.netState && <div className="fixed left-1/2 -translate-x-1/2 top-2 sm:top-12 z-20 text-[11px] text-white bg-slate-950/55 backdrop-blur rounded-full px-3 py-1 border border-white/15 max-w-[92vw] sm:max-w-[60vw] text-center" data-testid="netstate">{s.netState.text}</div>}
       {s.charge !== null && (
-        <div className="fixed left-1/2 -translate-x-1/2 bottom-24 w-[240px]"><div className="relative h-3 rounded-full bg-black/45 border border-white/30 overflow-hidden"><div className="absolute top-0 h-full bg-emerald-400/50" style={{ left: '55%', width: '30%' }} /><div className="absolute top-0 h-full w-1.5 bg-white" style={{ left: `${s.charge * 100}%` }} /></div><div className="text-center text-[10px] text-white/85 mt-0.5">release in the green: far right = long throw, green = clean spin</div></div>
+        <div className="fixed left-1/2 -translate-x-1/2 bottom-24 z-20 w-[240px]"><div className="relative h-3 rounded-full bg-black/45 border border-white/30 overflow-hidden"><div className="absolute top-0 h-full bg-emerald-400/50" style={{ left: '55%', width: '30%' }} /><div className="absolute top-0 h-full w-1.5 bg-white" style={{ left: `${s.charge * 100}%` }} /></div><div className="text-center text-[10px] text-white/85 mt-0.5">release in the green: far right = long throw, green = clean spin</div></div>
       )}
-      {walking && s.method === 'cast' && s.charge === null && <div className="fixed left-1/2 -translate-x-1/2 bottom-6 text-[11px] text-white/80 bg-slate-950/40 rounded-full px-3 py-1">hold F (or click) to wind up the throw</div>}
+      {walking && s.method === 'cast' && s.charge === null && !IS_TOUCH && <div className="fixed left-1/2 -translate-x-1/2 bottom-6 text-[11px] text-white/80 bg-slate-950/40 rounded-full px-3 py-1">hold F (or click) to wind up the throw</div>}
       {s.toast && <Toast key={s.toast.id} t={s.toast.t} />}
-      {s.help && <div className="pe fixed right-3 bottom-3 w-[300px] rounded-2xl border border-white/20 bg-slate-950/60 p-3 text-[11px] leading-snug text-sky-50 backdrop-blur" data-testid="help">
+      {s.help && <div className="pe fixed right-3 bottom-3 z-30 w-[min(300px,calc(100vw-24px))] rounded-2xl border border-white/20 bg-slate-950/70 p-3 text-[11px] leading-snug text-sky-50 backdrop-blur" data-testid="help">
         <div className="font-semibold text-sm mb-1">Reading the sea</div>
-        You start at the wheel. Press <b>B</b> to stand up and walk the whole boat in first person. Fish give no markers: look for <b>dark shifting patches</b>, <b>silver flashes</b>, <b>boiling water</b>, tight bait balls and circling gulls. Close and shallow is clear — deep, far or murky fades out.
-        <div className="mt-1.5 text-[10.5px] text-sky-200/80"><b>F</b> use net · <b>G</b> haul · <b>N</b> next net · <b>T</b> mesh · <b>V</b> slow creep · <b>H</b> sell · <b>Z</b> workshop · <b>J</b> soak gillnet · <b>Q/E</b> trawl warp · <b>C</b> camera · <b>K</b> hide this</div>
+        You start at the wheel. Press <b>B</b> to stand up and walk the boat — it stops while you walk. Fish give no markers: look for <b>swirling dark masses</b>, <b>silver flashes rippling through a school</b>, <b>boiling water</b> and circling gulls. The <b>fish finder</b> shows what is under you. If a net comes up empty it is simply hauled in.
+        <div className="mt-1.5 text-[10.5px] text-sky-200/80"><b>F</b> use net · <b>G</b> haul · <b>N</b> next net · <b>T</b> mesh · <b>V</b> cruise · <b>H</b> sell · <b>Z</b> workshop · <b>J</b> soak gillnet · <b>Q/E</b> trawl depth · <b>X</b> follow school · <b>C</b> camera · <b>K</b> hide</div>
         <div className="mt-1.5 text-right"><Btn on={() => store.set({ help: false })}>Got it (K)</Btn></div></div>}
+      <TouchControls />
     </>
   );
 }
+function FeedPop({ f }: any) { const [v, setV] = useState(true); useEffect(() => { const i = setTimeout(() => setV(false), 2600); return () => clearTimeout(i); }, []); return v ? <div className="feedpop rounded-full border border-white/25 bg-slate-950/60 px-3 py-0.5 text-[12px] font-medium text-white backdrop-blur"><span className="text-emerald-300">+1</span> {SPECIES[f.sp].name}</div> : null; }
 function Toast({ t }: any) { const [v, setV] = useState(true); useEffect(() => { const i = setTimeout(() => setV(false), 4200); return () => clearTimeout(i); }, []); return v ? <div className="fixed left-1/2 -translate-x-1/2 bottom-8 max-w-[560px] rounded-full bg-slate-950/60 border border-white/20 px-4 py-1.5 text-[12px] text-white backdrop-blur text-center">{t}</div> : null; }
 
 export default function App() {
   const s = useStore(); const [ready, setReady] = useState(false);
-  useEffect(() => { const w = new World((window as any).sea); (window as any).nf = { world: w, store, genNet, compat, BOATS, SPECIES }; setReady(true); }, []);
+  useEffect(() => { const w = new World((window as any).sea); (window as any).nf = { world: w, store, genNet, compat, BOATS, SPECIES }; if (innerWidth < 760 || innerHeight < 500) store.set({ help: false }); setReady(true); }, []);
   const done = (res: any) => world().finishGame(res);
   const g = s.game;
   return (

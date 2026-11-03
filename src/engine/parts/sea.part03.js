@@ -1,3 +1,14 @@
+{const it=fAdd(fBuoy(0x2f7fd8,.6),100,-12);for(let k=0;k<20;k++){const m=new THREE.Mesh(new THREE.TorusGeometry(.14,.04,6,10),fMat(k%2?0xd8d8d8:0x8a8f94,.12));m.position.set(it.x,-k-.5,it.z);m.rotation.y=k%2?0:Math.PI/2;scene.add(m)}fBlock(it,-20.4,.8)}
+// 8  big beach ball
+{const g=new THREE.Group(),b=new THREE.Mesh(new THREE.SphereGeometry(1.1,20,14),fMat(0xffffff,.25));b.position.y=.3;g.add(b);
+ for(let k=0;k<4;k++){const s=new THREE.Mesh(new THREE.CylinderGeometry(1.11,1.11,.5,20,1,true),fMat(k%2?0xe8352b:0x2fd2ff,.3));s.position.y=-.4+k*.5;g.add(s)}fAdd(g,30,26)}
+function floaters(dt,t){
+ if(!FL.length)return;fProbe();if(!fgot)return;const k=1-Math.exp(-dt*5),w=1+2*storm;
+ for(const it of FL){const g=it.g;g.position.y=g.userData.init?g.position.y+(fh[it.i]-g.position.y)*k:fh[it.i];g.userData.init=1;
+  if(it.tilt){g.rotation.x=.1*w*Math.sin(t*1.1+it.i*1.7);g.rotation.z=.12*w*Math.sin(t*.8+it.i*2.3)}
+  for(const th of it.tethers){th.m.scale.y=Math.max(.01,g.position.y-th.bot)}}}
+
+/* --- cameras: Chase (orbit), Bridge (inside), Bow, Low side, Drone, Cinematic (auto-cuts) --- */
 const MODES=['Chase','Inner','Bow','Low side','Drone','Cinematic','Deck'],DECK={yaw:0,pitch:-.3,eye:new THREE.Vector3(0,2.75,2.55),walk:0},CTL={override:false,power:0,k:1,turn:0},look={y:0,p:0,drag:false},lk=new Vector3(),cp=new Vector3(),tp=new Vector3(),tl=new Vector3(),ee=new Euler();let mode=0,camBtn,flipBtn;
 function setMode(m){mode=(m+MODES.length)%MODES.length;controls.enabled=mode===0;camBtn.textContent='📷 '+MODES[mode];camera.fov=mode===1?75:mode===6?68:mode===2?68:58;camera.near=(mode===1||mode===6)?.1:.5;camera.updateProjectionMatrix();resize();
  shell.forEach(s=>s.visible=mode!==1);look.y=look.p=0;

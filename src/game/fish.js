@@ -1,55 +1,40 @@
 // @ts-nocheck
-/* Fish: boids schools (separation / alignment / cohesion + predator avoidance + depth layering), lone fish, natural visual cues only.
-   Cues: dark shifting patches, silver flashes on turns, surface ripples/boil (wave-sim impulses), leaping bait, tight bait balls. NO markers of any kind. */
+/* Fish: schools that move like real bait balls (rotating mill, amoeba shaped envelope, breathing, silver flash waves, vacuoles around the boat),
+   lone stragglers for the trawl to pick up one by one, natural visual cues only.
+   Rendering: every fish is a real body (instanced, tail beating in the vertex shader, counter-shaded, mirror flanks that glitter when they bank) shaded by the shared
+   underwater model in underwater.js, plus a soft teal mass where fish overlap. NO markers of any kind. */
 import * as THREE from 'three';
 import { SPECIES, SPECIES_LIST, clamp, lerp, sstep, TAU, seaEnv } from './config.js';
+import { fishGeometry, fishMaterial, schoolCloudMaterial, glintMaterial, billboards } from './underwater.js';
 
 const R = Math.random, rt = (a, b) => a + (b - a) * R();
 const MAXF = window.__lite ? 700 : 1500;
-
-function fishGeometry() {   // spindle body with a forked tail; nose at +Z
-  const pts = [[0, .52], [.07, .45], [.15, .3], [.2, .08], [.19, -.12], [.12, -.3], [.05, -.42], [.09, -.5], [.15, -.58], [.0, -.5]].map(([r, z]) => new THREE.Vector2(r, z));
-  const g = new THREE.LatheGeometry(pts, 6); g.rotateX(Math.PI / 2); g.rotateY(Math.PI);   // lathe axis Y -> Z
-  return g;
-}
+const STRAGGLERS = window.__lite ? 22 : 40;
+const wrapA = (a) => ((a + Math.PI * 3) % TAU) - Math.PI;
 
 export class FishWorld {
   constructor(S) {
     this.S = S; this.schools = []; this.t = 0; this.frame = 0; this.count = 0; this.events = [];
     const g = fishGeometry();
-    g.setAttribute('aVis', new THREE.InstancedBufferAttribute(new Float32Array(MAXF), 1));
-    this.visA = g.attributes.aVis; this.visA.setUsage(THREE.DynamicDrawUsage);
-    this.flashA = new THREE.InstancedBufferAttribute(new Float32Array(MAXF), 1); this.flashA.setUsage(THREE.DynamicDrawUsage); g.setAttribute('aFlash', this.flashA);
-    this.uT = { value: 0 }; this.uL = { value: 1 };
-    const m = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide });
-    m.onBeforeCompile = (sh) => {
-      sh.uniforms.uT = this.uT; sh.uniforms.uL = this.uL;
-      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float aVis;attribute float aFlash;varying float vVis;varying float vFl;varying float vBelly;uniform float uT;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nfloat ph=float(gl_InstanceID)*1.7;transformed.x+=sin(uT*11.0+ph-position.z*7.0)*.10*smoothstep(.05,-.55,position.z);vVis=aVis;vFl=aFlash;vBelly=-normal.y;');
-      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vVis;varying float vFl;varying float vBelly;uniform float uL;')
-        .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb=mix(diffuseColor.rgb,vec3(.8,.86,.9),smoothstep(.1,.8,vBelly)*.5)*uL;diffuseColor.rgb=mix(vec3(.02,.13,.2)*uL,diffuseColor.rgb,.5+.4*vVis);diffuseColor.rgb+=vec3(.9,.95,1.)*vFl*1.2;diffuseColor.a*=clamp(vVis+vFl*.6*vVis,0.,1.);');
-    };
-    this.mesh = new THREE.InstancedMesh(g, m, MAXF); this.mesh.frustumCulled = false; this.mesh.renderOrder = 4; this.mesh.count = 0;
-    for (let i = 0; i < MAXF; i++) this.mesh.setColorAt(i, new THREE.Color(1, 1, 1));
-    S.scene.add(this.mesh);
-    // school body: soft dark sprites, one per fish. A tight ball overlaps into one dark mass that shifts as the boids turn;
-    // a loose school stays a thin shadow. Individual fish only resolve (3D mesh) when close and shallow.
-    this.cPos = new Float32Array(MAXF * 3); this.cA = new Float32Array(MAXF); this.cS = new Float32Array(MAXF);
-    const cg = new THREE.BufferGeometry(); cg.setAttribute('position', new THREE.BufferAttribute(this.cPos, 3).setUsage(THREE.DynamicDrawUsage)); cg.setAttribute('aA', new THREE.BufferAttribute(this.cA, 1).setUsage(THREE.DynamicDrawUsage)); cg.setAttribute('aS', new THREE.BufferAttribute(this.cS, 1).setUsage(THREE.DynamicDrawUsage));
+    this.aCol = new THREE.InstancedBufferAttribute(new Float32Array(MAXF * 3), 3).setUsage(THREE.DynamicDrawUsage);
+    this.aBel = new THREE.InstancedBufferAttribute(new Float32Array(MAXF * 3), 3).setUsage(THREE.DynamicDrawUsage);
+    this.aFx = new THREE.InstancedBufferAttribute(new Float32Array(MAXF * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('aCol', this.aCol); g.setAttribute('aBel', this.aBel); g.setAttribute('aFx', this.aFx);
+    this.mesh = new THREE.InstancedMesh(g, fishMaterial(), MAXF); this.mesh.frustumCulled = false; this.mesh.renderOrder = .45; this.mesh.count = 0; S.scene.add(this.mesh);
+    this.spCol = {}; for (const sp of SPECIES_LIST) this.spCol[sp.id] = { c: new THREE.Color(sp.color), b: new THREE.Color(sp.belly), st: sp.id === 'mackerel' ? 1 : 0 };
+    // school body: soft teal mass; overlapping fish thicken it into a bait ball that shifts as the school turns
+    this.cPos = new Float32Array(MAXF * 3); this.cA = new Float32Array(MAXF); this.cS = new Float32Array(MAXF); this.cC = new Float32Array(MAXF * 3);
     this.uScale = { value: 600 };
-    const sprite = (additive, col) => new THREE.ShaderMaterial({ transparent: true, depthWrite: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending, uniforms: { uScale: this.uScale, uCol: { value: new THREE.Color(col) } },
-      vertexShader: 'attribute float aA;attribute float aS;uniform float uScale;varying float vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);gl_Position=projectionMatrix*mv;vA=aA;gl_PointSize=clamp(aS*uScale/max(.3,-mv.z),1.,96.);}',
-      fragmentShader: 'uniform vec3 uCol;varying float vA;void main(){float d=length(gl_PointCoord-.5)*2.;float a=smoothstep(1.,.05,d);a*=a;gl_FragColor=vec4(uCol,a*vA);}' });
-    this.cloud = new THREE.Points(cg, sprite(false, 0x021a2a)); this.cloud.frustumCulled = false; this.cloud.renderOrder = 3; S.scene.add(this.cloud);
+    this.cloud = billboards(schoolCloudMaterial(), this.cPos, this.cA, this.cS, this.cC); this.cloud.renderOrder = .4; S.scene.add(this.cloud);
+    // silver glints (additive)
     this.gPos = new Float32Array(MAXF * 3); this.gA = new Float32Array(MAXF); this.gS = new Float32Array(MAXF);
-    const gg = new THREE.BufferGeometry(); gg.setAttribute('position', new THREE.BufferAttribute(this.gPos, 3).setUsage(THREE.DynamicDrawUsage)); gg.setAttribute('aA', new THREE.BufferAttribute(this.gA, 1).setUsage(THREE.DynamicDrawUsage)); gg.setAttribute('aS', new THREE.BufferAttribute(this.gS, 1).setUsage(THREE.DynamicDrawUsage));
-    this.glint = new THREE.Points(gg, sprite(true, 0xe8f6ff)); this.glint.frustumCulled = false; this.glint.renderOrder = 5; S.scene.add(this.glint);
+    this.glint = billboards(glintMaterial(), this.gPos, this.gA, this.gS); this.glint.renderOrder = .8; S.scene.add(this.glint);
     // leaping bait
     const NJ = 90; this.jp = new Float32Array(NJ * 3); this.jv = new Float32Array(NJ * 3); this.jl = new Float32Array(NJ).fill(-1);
     const jg = new THREE.BufferGeometry(); jg.setAttribute('position', new THREE.BufferAttribute(this.jp, 3));
-    this.jumpers = new THREE.Points(jg, new THREE.PointsMaterial({ color: 0xeaf4ff, size: .09, sizeAttenuation: true, transparent: true, opacity: .95, depthWrite: false }));
+    this.jumpers = new THREE.Points(jg, new THREE.PointsMaterial({ color: 0xeaf4ff, size: .1, sizeAttenuation: true, transparent: true, opacity: .95, depthWrite: false }));
     this.jumpers.frustumCulled = false; this.jumpers.renderOrder = 5; S.scene.add(this.jumpers); this.NJ = NJ; this.jn = 0;
-    this.dummy = new THREE.Object3D(); this.col = new THREE.Color(); this.tmpV = new THREE.Vector3();
+    this.dummy = new THREE.Object3D(); this.tmpV = new THREE.Vector3(); this.waveId = 1;
   }
 
   /* ------------ spawning ------------ */
@@ -63,18 +48,21 @@ export class FishWorld {
     const n = o.n ?? Math.round(rt(sp.schoolN[0], sp.schoolN[1]));
     if (this.totalFish() + n > MAXF) return null;
     const d = o.depth ?? rt(sp.depth[0], sp.depth[1]);
-    const s = { sp, id: Math.random(), x, z, d, d0: d, heading: o.heading ?? R() * TAU, al: 0, fl: 0, fleeDir: 0, n, lone, fish: [], act: 0, actT: rt(3, 30), actOn: !!o.feeding, vx: 0, vz: 0, surf: 0, surfT: rt(10, 30), flick: 0, rad: lone ? 1.2 : Math.max(2.4, Math.sqrt(n) * (sp.len * 2.2 + .25)) , fleeT0: 0, born: this.t };
+    const s = { sp, id: Math.random(), seed: R() * 100, t: R() * 50, spin: R() * TAU, x, z, d, d0: d, heading: o.heading ?? R() * TAU, al: 0, fl: 0, fleeDir: 0, n, lone, fish: [], act: 0, actT: rt(3, 30), actOn: !!o.feeding, vx: 0, vz: 0, surf: 0, surfT: rt(10, 30), flick: 0, rad: lone ? 1.2 : Math.max(2.0, Math.sqrt(n) * (sp.len * 1.15 + .12)), fleeT0: 0, born: this.t, waveT: rt(1, 5), wave: null, straggler: !!o.straggler };
     if (o.feeding) { s.act = 1; s.actT = rt(50, 120); }
     for (let i = 0; i < n; i++) {
-      const rr = s.rad * Math.sqrt(R()), a = R() * TAU, span = sp.pattern === 'ball' ? Math.min(s.rad * .3, 1.5) : lone ? .3 : 1.1;
-      const f = { s, sp, ox: Math.cos(a) * rr, oz: Math.sin(a) * rr, ly: (R() - .5) * 2 * span, x: x + Math.cos(a) * rr, z: z + Math.sin(a) * rr, y: -d, vx: 0, vy: 0, vz: 0, ph: R() * TAU, flash: 0, th: 0, lenK: rt(.85, 1.15), alpha: 0 };
-      s.fish.push(f);
+      const r0 = Math.sqrt(R()), a0 = R() * TAU, span = sp.pattern === 'ball' ? Math.min(s.rad * .3, 1.5) : lone ? .3 : 1.1, rr = s.rad * r0;
+      s.fish.push({ s, sp, a0, r0, ox: Math.cos(a0) * rr, oz: Math.sin(a0) * rr, ly: (R() - .5) * 2 * span, x: x + Math.cos(a0) * rr, z: z + Math.sin(a0) * rr, y: -d, vx: Math.cos(s.heading) * .2, vy: 0, vz: Math.sin(s.heading) * .2, ph: R() * TAU, flash: 0, rollK: 0, roll: 0, th: 0, lenK: rt(.85, 1.15), alpha: 0, sw: .3, hd: R() * TAU, wid: 0, dart: rt(1, 8), cap: null, tone: rt(.88, 1.12) });
     }
     this.schools.push(s); return s;
   }
   totalFish() { let c = 0; for (const s of this.schools) c += s.fish.length; return c; }
-  removeSchool(s) { if (s.patch) { this.S.scene.remove(s.patch); s.patch.material.dispose(); } this.schools.splice(this.schools.indexOf(s), 1); }
+  removeSchool(s) { const i = this.schools.indexOf(s); if (i >= 0) this.schools.splice(i, 1); }
   clear() { [...this.schools].forEach((s) => this.removeSchool(s)); }
+  spawnStraggler(boat, near) {
+    const sp = this.pickSpecies(), a = R() * TAU, d = near ? rt(30, 160) : rt(120, 330);
+    return this.spawnSchool(sp, boat.position.x + Math.cos(a) * d, boat.position.z + Math.sin(a) * d, { lone: true, n: 1 + (R() < .25 ? 1 : 0), straggler: true, depth: rt(sp.depth[0], Math.min(sp.depth[1], 12)) });
+  }
 
   initialWorld(boat) {
     const fx = -Math.sin(boat.heading), fz = -Math.cos(boat.heading), at = (d, ang) => { const a = Math.atan2(fz, fx) + ang; return [boat.position.x + Math.cos(a) * d, boat.position.z + Math.sin(a) * d]; };
@@ -84,22 +72,31 @@ export class FishWorld {
     p = at(75, 1.6); this.spawnSchool('cod', p[0], p[1], { depth: 11 });
     p = at(230, .3); this.spawnSchool('tuna', p[0], p[1], { depth: 5 });
     p = at(38, 2.4); this.spawnSchool('mullet', p[0], p[1], { depth: .9 });
+    p = at(130, -.5); this.spawnSchool('mackerel', p[0], p[1], { depth: 5.2 });
     for (let i = 0; i < 7; i++) { const sp = this.pickSpecies(); const a = R() * TAU, d = rt(110, 380); this.spawnSchool(sp, boat.position.x + Math.cos(a) * d, boat.position.z + Math.sin(a) * d, { feeding: sp.depth[1] < 4 && R() < .5 }); }
-    for (let i = 0; i < 9; i++) { const sp = R() < .6 ? SPECIES.mullet : SPECIES.seabass; const a = R() * TAU, d = rt(25, 220); this.spawnSchool(sp, boat.position.x + Math.cos(a) * d, boat.position.z + Math.sin(a) * d, { lone: true, n: 1 + (R() * 2 | 0) }); }
+    for (let i = 0; i < STRAGGLERS; i++) this.spawnStraggler(boat, true);
   }
 
-  /* ------------ queries for nets / gulls ------------ */
-  fishNear(x, z, r, maxDepth = 14) { const out = []; for (const s of this.schools) { if (Math.hypot(s.x - x, s.z - z) > r + s.rad + 3) continue; for (const f of s.fish) if (f.y > -maxDepth && Math.hypot(f.x - x, f.z - z) < r) out.push(f); } return out; }
+  /* ------------ queries for nets / gulls / sonar ------------ */
+  fishNear(x, z, r, maxDepth = 14) { const out = []; for (const s of this.schools) { if (Math.hypot(s.x - x, s.z - z) > r + s.rad + 3) continue; for (const f of s.fish) if (!f.cap && f.y > -maxDepth && Math.hypot(f.x - x, f.z - z) < r) out.push(f); } return out; }
   removeFish(list) { const set = new Set(list); for (const s of this.schools) { if (s.fish.some((f) => set.has(f))) s.fish = s.fish.filter((f) => !set.has(f)); } this.schools.filter((s) => s.fish.length === 0).forEach((s) => this.removeSchool(s)); }
-  scare(x, z, r, amt, dive = true) { for (const s of this.schools) { const d = Math.hypot(s.x - x, s.z - z); if (d < r + s.rad) { s.al += amt * (1 - clamp(d / (r + s.rad), 0, 1) * .6) * (.4 + s.sp.shy); if (s.al >= 1) this.flee(s, x, z); } } }
+  /* a fish is swept into the net: it keeps swimming (visibly) into the codend, then leaves the sea */
+  capture(f, rig) { if (f.cap) return; f.cap = { rig, t: 0, off: [rt(-.5, .5), rt(-.3, .3), rt(-.5, .5)] }; f.flash = 1; f.rollK = rt(-1, 1); }
+  /* echo sounder: fish counts per depth bin inside a swath around (x,z) */
+  sonar(x, z, half, bins, maxD) {
+    const out = new Float32Array(bins), sz = new Float32Array(bins);
+    for (const s of this.schools) { if (Math.hypot(s.x - x, s.z - z) > half + s.rad + 6) continue; for (const f of s.fish) { if (f.cap) continue; if (Math.hypot(f.x - x, f.z - z) > half) continue; const b = Math.floor(clamp(-f.y / maxD, 0, .999) * bins); out[b] += 1; sz[b] = Math.max(sz[b], f.sp.len); } }
+    return { dens: out, size: sz };
+  }
+  scare(x, z, r, amt) { for (const s of this.schools) { const d = Math.hypot(s.x - x, s.z - z); if (d < r + s.rad) { s.al += amt * (1 - clamp(d / (r + s.rad), 0, 1) * .6) * (.4 + s.sp.shy); if (s.al >= 1) this.flee(s, x, z); } } }
   flee(s, tx, tz) {
     if (s.fl > 0) return; s.fl = rt(6, 10); s.al = 0; s.fleeT0 = this.t; s.fleeDir = Math.atan2(s.z - tz, s.x - tx);
+    s.wave = { x: s.x, z: s.z, t0: this.t, sp: 9, id: this.waveId++ };
     this.events.push({ type: 'flee', school: s, x: s.x, z: s.z });
   }
-  /* shallow & actively feeding = what gulls dive on */
   isShallowFeeding(s) { return !s.lone && s.act > .45 && s.d < 3.6; }
 
-  /* ------------ visibility: distance, depth, clarity, light/sun angle, weather, sea state ------------ */
+  /* ------------ visibility of a fish mass: distance, depth, clarity, light/sun angle, weather, sea state ------------ */
   visibility(x, depth, z, cam, env, patch = false) {
     const dx = x - cam.x, dz = z - cam.z, d = Math.hypot(dx, dz) + 1e-3, h = Math.max(cam.y - this.S.S.y, .6);
     const slant = Math.min(Math.sqrt(1 + (d / (h + depth * .75)) ** 2), patch ? 6.5 : 9);
@@ -115,15 +112,13 @@ export class FishWorld {
 
   /* ------------ per-frame ------------ */
   update(dt, ctx) {
-    this.t += dt; this.frame++; this.uT.value = this.t;
+    this.t += dt; this.frame++;
     const S = this.S, boat = ctx.boat, env = seaEnv(), cam = S.camera.position;
-    this.uL.value = .18 + .82 * env.light;
-    const bx = boat.position.x, bz = boat.position.z, fx = -Math.sin(boat.heading), fz = -Math.cos(boat.heading);
-    const noise = ctx.noise;   // 0..~1.5 : speed, engine, wake, towing
-    let wi = 0; const cur = env.current;
+    const bx = boat.position.x, bz = boat.position.z;
+    const noise = ctx.noise; const cur = env.current; let lones = 0;
     for (let si = this.schools.length - 1; si >= 0; si--) {
-      const s = this.schools[si], sp = s.sp, dB = Math.hypot(s.x - bx, s.z - bz);
-      if (dB > 460) { this.removeSchool(s); this.respawn(boat); continue; }
+      const s = this.schools[si], sp = s.sp, dB = Math.hypot(s.x - bx, s.z - bz); s.t += dt; if (s.lone) lones++;
+      if (dB > 460) { this.removeSchool(s); if (!s.lone) this.respawn(boat); continue; }
       /* activity (feeding) cycle */
       s.actT -= dt; if (s.actT <= 0) { if (sp.depth[0] < 4 && !s.lone) { s.actOn = !s.actOn; s.actT = s.actOn ? rt(60, 130) : rt(15, 40); } else s.actT = 30; }
       if (sp.pattern === 'surfacing') { s.surfT -= dt; if (s.surfT <= 0) { s.surf = s.surf > 0 ? 0 : rt(5, 8); s.surfT = s.surf > 0 ? s.surf : rt(25, 45); } }
@@ -137,50 +132,69 @@ export class FishWorld {
       const pat = sp.pattern; let spd = sp.speed * .3, turn = (R() - .5) * dt * .9;
       if (s.fl > 0) { s.fl -= dt; const el = this.t - s.fleeT0; spd = sp.speed * (sp.flee === 'sprint' ? 3.4 : 2.4); let target = s.fleeDir;
         if (sp.flee === 'zigzag') target += Math.sin(el * 3.2) * .85; if (sp.flee === 'circle') { target = s.heading + dt * 1.8; spd = sp.speed * .8; } if (sp.flee === 'dive') spd = sp.speed * .6;
-        let da = ((target - s.heading + Math.PI * 3) % TAU) - Math.PI; s.heading += da * Math.min(1, dt * 4);
+        const da = wrapA(target - s.heading); s.heading += da * Math.min(1, dt * 4);
         const dive = sp.dive * Math.min(el, 4) * (sp.flee === 'dive' ? 2.2 : 1) * .7; s.d += (clamp(s.d0 + dive + 1.5, 0, 12.6) - s.d) * Math.min(1, dt * 1.2);
         if (el < .8 && s.d < 3.5) this.splashAt(s.x + rt(-s.rad, s.rad), s.z + rt(-s.rad, s.rad), .1);
       } else {
         s.d += (s.d0 - (s.surf > 0 ? s.d0 - .45 : 0) - s.d) * Math.min(1, dt * .6);
-        if (pat === 'ball') { spd = .12 + .1 * s.act; } else if (pat === 'circle') { turn = dt * .4; spd = sp.speed * .35; } else if (pat === 'lurk') { spd = .15; }
+        if (pat === 'ball') { spd = .12 + .1 * s.act; turn = Math.sin(s.t * .13 + s.seed) * dt * .22; } else if (pat === 'circle') { turn = dt * .4; spd = sp.speed * .35; } else if (pat === 'lurk') { spd = .15; }
         else if (pat === 'surfacing' && s.surf > 0) { spd = sp.speed * 1.4; turn = (R() - .5) * dt * 2.2; }
+        else if (pat === 'stream') { turn = Math.sin(s.t * .09 + s.seed) * dt * .35; spd = sp.speed * .42; }
+        if (s.lone) { turn = (R() - .5) * dt * 1.4; spd = sp.speed * .35; }
         s.heading += turn;
       }
-      s.vx = Math.cos(s.heading) * spd + fx * 0 + cur * .3; s.vz = Math.sin(s.heading) * spd + cur * .15; s.x += s.vx * dt; s.z += s.vz * dt;
-      const compact = pat === 'ball' ? (1 - .35 * s.act) : 1;
-      /* boids */
-      const F = s.fish, n = F.length; let cx = 0, cz = 0; for (let i = 0; i < n; i += 3) { cx += F[i].x; cz += F[i].z; } const k3 = Math.ceil(n / 3); cx /= k3; cz /= k3;
-      const fleeing = s.fl > 0, vmax = sp.speed * (fleeing ? (sp.flee === 'sprint' ? 3.2 : 2.7) : 1.15);
+      s.vx = Math.cos(s.heading) * spd + cur * .3; s.vz = Math.sin(s.heading) * spd + cur * .15; s.x += s.vx * dt; s.z += s.vz * dt;
+      /* the school's flash wave: a silver ripple that races through the fish */
+      s.waveT -= dt; if (s.waveT <= 0 && !s.lone && s.fish.length > 8) { s.waveT = rt(2.2, 6) / (1 + s.act * 1.6); const f0 = s.fish[(R() * s.fish.length) | 0]; s.wave = { x: f0.x, z: f0.z, t0: this.t, sp: rt(5, 9), id: this.waveId++ }; }
+      if (s.wave && this.t - s.wave.t0 > 3) s.wave = null;
+      /* boids on a moving, breathing, amoeba-shaped mill */
+      const F = s.fish, n = F.length, fleeing = s.fl > 0, vmax = sp.speed * (fleeing ? (sp.flee === 'sprint' ? 3.2 : 2.7) : 1.15);
+      const stream = pat === 'stream' || pat === 'surfacing' || pat === 'skim', elong = stream ? 1.8 : 1, narrow = stream ? .62 : 1;
+      const compact = (pat === 'ball' ? 1 - .3 * s.act : 1) * (fleeing ? 1.45 : 1) * (1 + .09 * Math.sin(s.t * .6 + s.seed));
+      const rad = s.rad * compact, om = Math.min((pat === 'ball' ? .5 : .28) * (1 + .6 * s.act) * (fleeing ? 1.6 : 1), .8 * sp.speed / Math.max(s.rad, 1));
+      s.spin += om * dt; const cH = Math.cos(s.heading), sH = Math.sin(s.heading), cohK = pat === 'ball' ? 2.6 : fleeing ? 2.3 : 1.7;
+      let done = 0;
       for (let i = 0; i < n; i++) {
-        const f = F[i]; let ax = 0, az = 0, ay = 0;
-        // goal: stay with school position + own offset (cohesion), school velocity
-        const gx = s.x + f.ox * compact, gz = s.z + f.oz * compact;
-        const cohK = pat === 'ball' ? 2.4 : fleeing ? 2.2 : 1.4; ax += (gx - f.x) * cohK; az += (gz - f.z) * cohK; ax += (cx - s.x) * 0; 
-        // alignment & separation vs sampled neighbours
-        let avx = 0, avz = 0;
-        for (let k = 0; k < 4; k++) {
-          const j = (i + 1 + ((i * 7 + k * 13 + this.frame * 3) % Math.max(1, n - 1))) % n; if (j === i) continue; const o = F[j];
-          avx += o.vx; avz += o.vz; const dx = f.x - o.x, dz = f.z - o.z, d2 = dx * dx + dz * dz, sr = sp.len * 1.8;
-          if (d2 < sr * sr && d2 > 1e-5) { const d = Math.sqrt(d2); const w = (sr - d) / sr * 6; ax += dx / d * w; az += dz / d * w; }
+        const f = F[i];
+        if (f.cap) {   // swept into the net: swim into the codend
+          f.cap.t += dt; const c = f.cap.rig.cod; if (!c || f.cap.rig.dead) { f.cap.t = 9; }
+          else { const k = Math.min(1, dt * 2.6), tx = c.x + f.cap.off[0], ty = c.y + f.cap.off[1], tz = c.z + f.cap.off[2]; const px = f.x, pz = f.z; f.x += (tx - f.x) * k; f.y += (ty - f.y) * k; f.z += (tz - f.z) * k; f.vx = (f.x - px) / dt; f.vz = (f.z - pz) / dt; f.sw = 1; f.flash = Math.max(0, f.flash - dt * 1.4); f.rollK *= Math.exp(-dt * 1.5); }
+          if (f.cap.t > 2.2) f.dead = true; if (f.dead) done++; continue;
         }
-        ax += (avx / 4 + s.vx - f.vx) * 1.1; az += (avz / 4 + s.vz - f.vz) * 1.1;
-        // individual predator avoidance: boat hull, bow wave and its shadow
+        const w = 1.18 - .62 * f.r0, a = f.a0 + s.spin * w;
+        const e = 1 + .28 * Math.sin(2 * a + s.t * .35 + s.seed) + .16 * Math.sin(3 * a - s.t * .27 + s.seed * 2.1) + .08 * Math.sin(5 * a + s.t * .7 + f.ph);
+        const lx = Math.cos(a) * f.r0 * rad * e * elong, lz = Math.sin(a) * f.r0 * rad * e * narrow;
+        const gx = s.x + lx * cH - lz * sH + Math.sin(s.t * .8 + f.ph) * rad * .05, gz = s.z + lx * sH + lz * cH + Math.cos(s.t * .7 + f.ph * 1.3) * rad * .05;
+        let ax = (gx - f.x) * cohK, az = (gz - f.z) * cohK;
+        // separation + alignment vs sampled neighbours
+        let avx = 0, avz = 0;
+        for (let k = 0; k < 3; k++) {
+          const j = (i + 1 + ((i * 7 + k * 13 + this.frame * 3) % Math.max(1, n - 1))) % n; if (j === i) continue; const o = F[j];
+          avx += o.vx; avz += o.vz; const dx = f.x - o.x, dz = f.z - o.z, d2 = dx * dx + dz * dz, sr = sp.len * 1.9;
+          if (d2 < sr * sr && d2 > 1e-5) { const d = Math.sqrt(d2), ww = (sr - d) / sr * 7; ax += dx / d * ww; az += dz / d * ww; }
+        }
+        ax += (avx / 3 + s.vx - f.vx) * .9; az += (avz / 3 + s.vz - f.vz) * .9;
+        // darting: single fish snap in a new direction, and the neighbours follow through the flash wave
+        f.dart -= dt; if (f.dart <= 0) { f.dart = rt(2, 9) / (1 + s.act); const ang = R() * TAU; f.vx += Math.cos(ang) * sp.speed * .9; f.vz += Math.sin(ang) * sp.speed * .9; if (R() < .3) { f.flash = Math.max(f.flash, .8); f.rollK = (R() < .5 ? -1 : 1) * rt(.8, 1.3); } }
+        // predators: the hull, its bow wave and shadow open a vacuole in the school
         const bdx = f.x - bx, bdz = f.z - bz, bd = Math.hypot(bdx, bdz);
-        if (bd < 9 && f.y > -6) { const w = (9 - bd) / 9; ax += bdx / (bd + .1) * w * 5 * sp.shy; az += bdz / (bd + .1) * w * 5 * sp.shy; if (bd < 5) s.al += .02 * dt * 60 * w * dt * sp.shy; }
-        if (ctx.netThreat && ctx.netThreat.r) { const nx = f.x - ctx.netThreat.x, nz = f.z - ctx.netThreat.z, nd = Math.hypot(nx, nz); if (nd < ctx.netThreat.r * 2 && f.y > -(ctx.netThreat.depth + 3)) { const w = 1 - nd / (ctx.netThreat.r * 2); ax += nx / (nd + .1) * w * 9; az += nz / (nd + .1) * w * 9; } }
+        if (bd < 11 && f.y > -6) { const ww = (11 - bd) / 11; ax += bdx / (bd + .1) * ww * 6 * sp.shy; az += bdz / (bd + .1) * ww * 6 * sp.shy; if (bd < 5) s.al += .02 * dt * 60 * ww * dt * sp.shy; }
+        if (ctx.netThreat && ctx.netThreat.r) { const nx = f.x - ctx.netThreat.x, nz = f.z - ctx.netThreat.z, nd = Math.hypot(nx, nz); if (nd < ctx.netThreat.r * 2 && f.y > -(ctx.netThreat.depth + 3)) { const ww = 1 - nd / (ctx.netThreat.r * 2); ax += nx / (nd + .1) * ww * 9; az += nz / (nd + .1) * ww * 9; } }
         if (fleeing && sp.flee === 'burst') { const sx = f.x - s.x, sz = f.z - s.z, sd = Math.hypot(sx, sz) + .1; ax += sx / sd * 2.5; az += sz / sd * 2.5; }
-        if (pat === 'circle' && !fleeing) { const rx = f.x - s.x, rz = f.z - s.z; ax += -rz * .9; az += rx * .9; }
         const pvx = f.vx, pvz = f.vz;
         f.vx += ax * dt; f.vz += az * dt; const sm = Math.hypot(f.vx, f.vz); if (sm > vmax) { f.vx *= vmax / sm; f.vz *= vmax / sm; }
-        f.x += f.vx * dt; f.z += f.vz * dt;
-        // depth layering
-        const ty = clamp(-(s.d + f.ly) + (fleeing && sp.flee !== 'dive' ? 0 : 0), -12.6, -.28), dv = (fleeing ? sp.dive * 1.4 : .7) * dt; f.vy = (ty - f.y); f.y += clamp(ty - f.y, -dv, dv);
-        // turning flash
-        const a0 = Math.atan2(pvx, pvz), a1 = Math.atan2(f.vx, f.vz); let dth = Math.abs(((a1 - a0 + Math.PI * 3) % TAU) - Math.PI);
-        f.th = dth / Math.max(dt, 1e-3);
-        if (f.th > 3.5 && sm > .25 && R() < (fleeing ? .12 : .035) + s.act * .03) f.flash = 1;
-        f.flash = Math.max(0, f.flash - dt * 3.2);
+        f.x += f.vx * dt; f.z += f.vz * dt; f.sw += (clamp(sm / (sp.speed * 1.4), 0, 1) - f.sw) * Math.min(1, dt * 3);
+        // depth layering: a bait ball is a 3-D ball, fish drift through its layers
+        const breathe = s.lone ? 1 : .55 + .45 * Math.sin(s.t * .4 + f.ph), ty = clamp(-(s.d + f.ly * breathe), -12.6, -.28), dv = (fleeing ? sp.dive * 1.4 : .7) * dt; f.vy = (ty - f.y); f.y += clamp(ty - f.y, -dv, dv);
+        // banking in turns exposes the mirror flank; flash = sun glinting off it
+        const a0 = Math.atan2(pvx, pvz), a1 = Math.atan2(f.vx, f.vz), da = wrapA(a1 - a0); f.th = Math.abs(da) / Math.max(dt, 1e-3);
+        const turn = wrapA(a1 - f.hd), spF = clamp(sm / (sp.speed * .6), 0, 1); f.hd = wrapA(f.hd + turn * Math.min(1, dt * 4.5 * (.3 + spF)));
+        const bank = clamp(-turn * .8, -.65, .65) * spF; f.roll += (bank - f.roll) * Math.min(1, dt * 3);
+        if (f.th > 5 && sm > .4 && R() < (fleeing ? .1 : .02) + s.act * .02) { f.flash = 1; f.rollK = (da > 0 ? -1 : 1) * rt(.7, 1.2); }
+        if (s.wave && f.wid !== s.wave.id) { const d = Math.hypot(f.x - s.wave.x, f.z - s.wave.z); if (Math.abs(d - s.wave.sp * (this.t - s.wave.t0)) < 1.1) { f.wid = s.wave.id; f.flash = Math.max(f.flash, .9 * rt(.6, 1)); f.rollK = (R() < .5 ? -1 : 1) * rt(.6, 1.2); } }
+        f.flash = Math.max(0, f.flash - dt * 2.6); f.rollK *= Math.exp(-dt * 3);
       }
+      if (done) { s.fish = s.fish.filter((f) => !f.dead); if (!s.fish.length) { this.removeSchool(s); continue; } }
       /* surface cues */
       if (s.d < 3.2 && dB < 320) {
         const rate = (s.act * 16 * Math.min(1, s.fish.length / 60) + (s.fl > 0 && s.d < 3 ? 8 : 0)) * (s.lone ? .3 : 1); s._acc = (s._acc || 0) + rate * dt;
@@ -188,6 +202,7 @@ export class FishWorld {
         if (s.act > .5 && R() < dt * 2.2 * s.act * (sp.pattern === 'ball' ? 1.4 : 1)) this.jump(s.x + rt(-1, 1) * s.rad * .8, s.z + rt(-1, 1) * s.rad * .8);
       }
     }
+    if (lones < STRAGGLERS && this.frame % 20 === 0) this.spawnStraggler(boat, false);
     this.updateInstances(cam, env);
     this.updateJumpers(dt);
   }
@@ -203,29 +218,27 @@ export class FishWorld {
     this.jumpers.geometry.attributes.position.needsUpdate = true;
   }
   updateInstances(cam, env) {
-    const m = this.mesh, d = this.dummy, col = this.col; let i = 0, ci = 0, gi = 0;
-    const va = this.visA.array, fa = this.flashA.array, cp = this.cPos, ca = this.cA, cs = this.cS, gp = this.gPos, ga = this.gA, gs = this.gS;
+    const m = this.mesh, d = this.dummy; let i = 0, ci = 0, gi = 0;
+    const cp = this.cPos, ca = this.cA, cs = this.cS, cc = this.cC, gp = this.gPos, ga = this.gA, gs = this.gS, AC = this.aCol.array, AB = this.aBel.array, AF = this.aFx.array;
     const sz = this.S.renderer.getSize(this.tmpS || (this.tmpS = new THREE.Vector2())); this.uScale.value = sz.y * this.S.renderer.getPixelRatio() * .5 / Math.tan(this.S.camera.fov * Math.PI / 360);
     for (const s of this.schools) {
+      const sc0 = this.spCol[s.sp.id];
       for (const f of s.fish) {
         if (i >= MAXF) break;
-        const dd = Math.hypot(f.x - cam.x, f.z - cam.z);
-        const vis = dd > 300 ? 0 : this.visibility(f.x, -f.y, f.z, cam, env);
-        const visBody = dd > 300 ? 0 : this.visibility(f.x, -f.y, f.z, cam, env, true);   // the blurred mass is seen further / deeper than a single fish
-        const flashVis = f.flash > 0 ? this.visibility(f.x, Math.max(0, -f.y * .35), f.z, cam, env) : 0;
-        f.alpha = vis; const close = 1 - sstep(9, 24, dd), a = clamp(vis * 3.2, 0, 1) * close;
-        va[i] = a; fa[i] = f.flash * clamp(flashVis * 3, 0, 1) * close;
-        const L = f.sp.len * f.lenK, sc = Math.max(L, dd > 25 ? L * 1.6 : L);
-        d.position.set(f.x, f.y, f.z); d.rotation.set(-clamp(f.vy * .2, -.5, .5), Math.atan2(f.vx, f.vz), Math.sin(this.t * 3 + f.ph) * .04, 'YXZ');
-        d.scale.set(sc * .3 * 1.5, sc * .5 * 1.5, sc * 1.5); d.updateMatrix(); m.setMatrixAt(i, d.matrix);
-        col.setHex(f.sp.color); m.setColorAt(i, col); i++;
-        const al = clamp(visBody * 1.6, 0, .55) * (1 - .4 * close);
-        if (al > .004) { cp[ci * 3] = f.x; cp[ci * 3 + 1] = f.y; cp[ci * 3 + 2] = f.z; ca[ci] = al; cs[ci] = L * 5 + dd * .014 + .15; ci++; }
-        if (f.flash > .05 && flashVis > .01) { gp[gi * 3] = f.x; gp[gi * 3 + 1] = f.y + .05; gp[gi * 3 + 2] = f.z; ga[gi] = clamp(f.flash * flashVis * 7, 0, 1); gs[gi] = L * 1.5 + dd * .006 + .06; gi++; }
+        const dx = f.x - cam.x, dz = f.z - cam.z, dd = Math.hypot(dx, dz); if (dd > 320) continue;
+        const L = f.sp.len * f.lenK, sc = Math.max(L, dd * .009), wd = sc * (f.sp.girth / .17);
+        d.position.set(f.x, f.y, f.z); d.rotation.set(-clamp(f.vy * .25, -.5, .5), f.hd, f.roll + f.rollK * 1.1 + Math.sin(this.t * 3 + f.ph) * .04, 'YXZ');
+        d.scale.set(wd, wd * 1.05, sc); d.updateMatrix(); m.setMatrixAt(i, d.matrix);
+        const k = f.tone; AC[i * 3] = sc0.c.r * k; AC[i * 3 + 1] = sc0.c.g * k; AC[i * 3 + 2] = sc0.c.b * k; AB[i * 3] = sc0.b.r; AB[i * 3 + 1] = sc0.b.g; AB[i * 3 + 2] = sc0.b.b;
+        AF[i * 4] = f.flash; AF[i * 4 + 1] = f.ph; AF[i * 4 + 2] = f.sw; AF[i * 4 + 3] = sc0.st; i++;
+        const close = 1 - sstep(9, 30, dd), visBody = this.visibility(f.x, -f.y, f.z, cam, env, true);
+        const al = clamp(visBody * 2.2, 0, .62) * (1 - .2 * close) * (f.cap ? 0 : 1);
+        if (al > .004 && !s.lone) { cp[ci * 3] = f.x; cp[ci * 3 + 1] = f.y; cp[ci * 3 + 2] = f.z; ca[ci] = al; cs[ci] = L * 9 + dd * .018 + .45; cc[ci * 3] = .004 + sc0.c.r * .1; cc[ci * 3 + 1] = .016 + sc0.c.g * .12; cc[ci * 3 + 2] = .03 + sc0.c.b * .14; ci++; }
+        if (f.flash > .05) { const fv = this.visibility(f.x, Math.max(0, -f.y * .35), f.z, cam, env); if (fv > .01) { gp[gi * 3] = f.x; gp[gi * 3 + 1] = f.y + .05; gp[gi * 3 + 2] = f.z; ga[gi] = clamp(f.flash * fv * 6, 0, 1); gs[gi] = L * 1.8 + dd * .006 + .06; gi++; } }
       }
     }
-    m.count = i; this.count = i; m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; this.visA.needsUpdate = true; this.flashA.needsUpdate = true;
-    const cg = this.cloud.geometry, gg = this.glint.geometry; cg.setDrawRange(0, ci); gg.setDrawRange(0, gi);
-    cg.attributes.position.needsUpdate = cg.attributes.aA.needsUpdate = cg.attributes.aS.needsUpdate = true; gg.attributes.position.needsUpdate = gg.attributes.aA.needsUpdate = gg.attributes.aS.needsUpdate = true;
+    m.count = i; this.count = i; m.instanceMatrix.needsUpdate = true; this.aCol.needsUpdate = this.aBel.needsUpdate = this.aFx.needsUpdate = true;
+    const cg = this.cloud.geometry, gg = this.glint.geometry; cg.instanceCount = ci; gg.instanceCount = gi;
+    for (const k of ['aPos', 'aA', 'aS', 'aC']) cg.attributes[k].needsUpdate = true; for (const k of ['aPos', 'aA', 'aS']) gg.attributes[k].needsUpdate = true;
   }
 }
