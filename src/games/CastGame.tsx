@@ -17,7 +17,7 @@ function factory(cfg: any) {
   const rimY = () => G.zr * (1 - .12 * G.c), rho = () => rho0 * (1 - .93 * G.c), xs = (d: number) => rho() * Math.pow(clamp(d / Math.max(rimY(), .2), 0, 1), .62);
   const inside = (f: any) => !f.out && !f.slip && f.y < rimY() && Math.abs(f.x) < xs(f.y) + .02;
   const finish = (auto: boolean) => {
-    const kept = fish.filter((f: any) => !f.out && !f.dead && f.y < rimY() + .3 && Math.abs(f.x) < rho() + .06 && (!f.slip) && (!auto || R() < .55));
+    const kept = fish.filter((f: any) => !f.out && !f.dead && !f.slip && (f.trapped || (f.y < rimY() + .3 && Math.abs(f.x) < rho() + .06)) && (!auto || R() < .55));
     const idx = kept.map((f: any) => f.i), outN = fish.filter((f: any) => f.out).length, slipN = fish.filter((f: any) => f.slip && f.y < 7).length, deepN = fish.filter((f: any) => f.p.depth > 8).length, shed = fish.filter((f: any) => f.shed).length;
     const score = potential ? clamp(idx.length / potential, 0, 1) : 0, perfect = potential >= 3 && score >= .8 && !auto;
     let tip = '';
@@ -34,11 +34,11 @@ function factory(cfg: any) {
     if (G.result) return; G.t += dt; const wave = 1 + .25 * Math.sin(G.t * 2.3) * env.seaDiff;
     G.zr = Math.min(G.zr + sinkRate * dt * wave * (1 - .3 * G.c), Dm - .3);
     const insideN = fish.filter(inside).length, load = clamp(insideN * (cfg.pool[0] ? SPECIES[cfg.pool[0].sp].len : .3) / 14, 0, 1.4);
-    if (G.holding) { const rate = clamp(.66 - net.weight * .02, .25, .7) * (1 - .8 * G.tension * G.tension) * (cfg.comp.over > 1 ? .8 : 1); G.c = Math.min(1, G.c + rate * dt); G.tension = Math.min(1, G.tension + (.1 + .4 * load + .15 * cfg.comp.strain) * dt); }
+    if (G.holding) { const rate = clamp(.9 - net.weight * .025, .3, .9) * (1 - .8 * G.tension * G.tension) * (cfg.comp.over > 1 ? .8 : 1); G.c = Math.min(1, G.c + rate * dt); G.tension = Math.min(1, G.tension + (.1 + .4 * load + .15 * cfg.comp.strain) * dt); }
     else { G.tension = Math.max(0, G.tension - .35 * dt); G.c = Math.max(0, G.c - .02 * dt); }
     G.pulses = G.pulses.filter((p: any) => (p.t += dt) < .6);
     for (const f of fish) {
-      if (f.dead) continue; f.ph += dt * 8; f.flash = Math.max(0, f.flash - dt * 3); f.x += cur * dt;
+      if (f.dead) continue; if (G.c > .45 && !f.trapped && inside(f)) f.trapped = true; if (f.trapped) { if (G.tension >= .98 && R() < dt * .6 && f.sp.len > mesh * .0095 * 1.4) { f.shed = true; f.out = true; f.trapped = false; } else { f.x += (0 - f.x) * Math.min(1, dt * 2.5); f.y = Math.min(f.y, rimY() - .05); f.ph += dt * 8; continue; } } f.ph += dt * 8; f.flash = Math.max(0, f.flash - dt * 3); f.x += cur * dt;
       for (const p of G.pulses) if (p.t < dt * 1.5) { const d = f.x - p.x; if (Math.abs(d) < .7 && f.y < 4) { f.vx += Math.sign(d || 1) * (1 - Math.abs(d) / .7) * .9; f.panic -= .25; f.flash = 1; } }
       if (f.state === 'idle') { f.panic -= dt; f.x += f.vx * dt; if (f.panic <= 0) { f.state = 'flee'; f.flash = 1; } }
       else { const dir = Math.sign(f.x || (R() - .5)) * (f.sp.flee === 'sprint' ? 1.6 : 1), zz = f.sp.flee === 'zigzag' ? Math.sin(f.ph * .5) * .5 : 0, tx = (dir * (.5 + f.sp.speed * .12) + zz) / (1 + Rm * .15), ty = f.sp.dive * (f.sp.flee === 'dive' ? .8 : .36);
@@ -82,7 +82,7 @@ export default function CastGame({ cfg, onDone }: any) {
   return (
     <Frame title="Cast Net — Race the Rim" cfg={cfg} tagline="The net sinks like a bell while the fish panic and dive. Cinch the cord when the rim passes the fish. Close early for a safe small catch — or wait for a bigger layer and risk the dive."
       keysHint="Hold Space / the button to cinch · click the water to herd fish inward · release to let the cord tension drop">
-      <GameCanvas cfg={cfg} factory={factory} onDone={onDone} />
+      <GameCanvas cfg={cfg} factory={factory} onDone={onDone} help={{ title: 'Cast net — cut-away under your net', goal: 'Close the draw cord while as many fish as possible are inside the bell.', steps: ['Your net is sinking like a bell (the rim is the dark rope with lead). Fish are idle for a moment, then panic and dive out sideways.', 'HOLD SPACE (or the orange button) to pull the draw cord: the rim lifts and shrinks. Fish above the rim and inside the bell are trapped in the bag. The "In the bell" counter on top shows how many are over the net right now.', 'Watch the TENSION bar: a heavy catch strains the cord. Let go for a moment when it turns red, or fish are shed.', 'Click the water beside a straggler to herd it inward (it also startles nearby fish).', 'Close early for a safe small catch, or let the net sink past a deeper layer for more — but the fish dive faster than a light net sinks.'], tip: 'Start pulling when the rim is just below most of the fish. The 3D net behind this window follows what you do.' }} />
     </Frame>
   );
 }

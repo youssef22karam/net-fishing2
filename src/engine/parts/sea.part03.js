@@ -175,7 +175,7 @@ function nightLights(){
  WU.uBLk.value=on?1:0}
 
 function boatFrame(dt,t){
- dt=Math.min(dt,.05);const kk=keys,thr=(kk.has('up')?1:0)-(kk.has('down')?1:0),sIn=ST.cap?0:(kk.has('left')?1:0)-(kk.has('right')?1:0);
+ dt=Math.min(dt,.05);const kk=keys,thr=(kk.has('up')?1:0)-(kk.has('down')?1:0),sIn=ST.cap?0:CTL.override?(CTL.rudder||0):(kk.has('left')?1:0)-(kk.has('right')?1:0);
  if(kk.has('stop'))thrLever=0;   // sea-storm controls: W = +8, S = -3, released = lever (0); power ramps 3.5/s (5/s toward neutral)
  const tgt=ST.cap?0:CTL.override?CTL.power:kk.has('up')?8:kk.has('down')?-3:thrLever,rate=tgt===0?5:3.5;
  boat.power+=Math.min(Math.abs(tgt-boat.power),rate*dt)*Math.sign(tgt-boat.power);if(ST.cap)boat.power*=Math.exp(-dt*2.5);
@@ -187,7 +187,7 @@ function boatFrame(dt,t){
 
 /* ===== 12. main loop ===== */
 applyPreset('Midday');sim.updateSpectrum();dirty=false;setQuality();
-window.sea={scene,camera,renderer,water,seabed,P,U,sim,boat,KIT,TUNE,S,ST,hullG,shell,DECK,CTL,keys,setMode,getMode:()=>mode,splash:(x,z,k)=>{if(nImp<24){impB[nImp*3]=x;impB[nImp*3+1]=z;impB[nImp*3+2]=k;nImp++}},storm:()=>storm,wake:()=>wkA};
+window.sea={scene,camera,renderer,water,seabed,P,U,sim,boat,KIT,TUNE,S,ST,hullG,shell,DECK,CTL,keys,setMode,setLever:v=>{thrLever=v},getMode:()=>mode,splash:(x,z,k)=>{if(nImp<24){impB[nImp*3]=x;impB[nImp*3+1]=z;impB[nImp*3+2]=k;nImp++}},storm:()=>storm,wake:()=>wkA};
 let last=performance.now(),lastBuild=0;
 renderer.setAnimationLoop(now=>{
  const dt=Math.min((now-last)/1000,.1);last=now;U.uTime.value+=dt;

@@ -27,21 +27,23 @@ export class FishWorld {
       sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float aVis;attribute float aFlash;varying float vVis;varying float vFl;varying float vBelly;uniform float uT;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nfloat ph=float(gl_InstanceID)*1.7;transformed.x+=sin(uT*11.0+ph-position.z*7.0)*.10*smoothstep(.05,-.55,position.z);vVis=aVis;vFl=aFlash;vBelly=-normal.y;');
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vVis;varying float vFl;varying float vBelly;uniform float uL;')
-        .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb=mix(diffuseColor.rgb,vec3(.88,.92,.95),smoothstep(-.15,.6,vBelly)*.75)*uL;diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.5,.78,.88)*uL,.28);diffuseColor.rgb+=vec3(.9,.95,1.)*vFl*1.1;diffuseColor.a*=clamp(vVis+vFl*.6*vVis,0.,1.);');
+        .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb=mix(diffuseColor.rgb,vec3(.8,.86,.9),smoothstep(.1,.8,vBelly)*.5)*uL;diffuseColor.rgb=mix(vec3(.02,.13,.2)*uL,diffuseColor.rgb,.5+.4*vVis);diffuseColor.rgb+=vec3(.9,.95,1.)*vFl*1.2;diffuseColor.a*=clamp(vVis+vFl*.6*vVis,0.,1.);');
     };
     this.mesh = new THREE.InstancedMesh(g, m, MAXF); this.mesh.frustumCulled = false; this.mesh.renderOrder = 4; this.mesh.count = 0;
     for (let i = 0; i < MAXF; i++) this.mesh.setColorAt(i, new THREE.Color(1, 1, 1));
     S.scene.add(this.mesh);
-    // dark patches
-    this.patchGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-    this.patchMat = () => new THREE.ShaderMaterial({
-      transparent: true, depthWrite: false, uniforms: { uA: { value: 0 }, uT: { value: 0 }, uSeed: { value: R() * 50 } },
-      vertexShader: 'varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
-      fragmentShader: `varying vec2 vUv;uniform float uA,uT,uSeed;
-float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-float n(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(h(i),h(i+vec2(1,0)),f.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),f.y);}
-void main(){vec2 p=vUv-.5;float r=length(p)*2.;float w=n(p*5.+uT*vec2(.18,.11)+uSeed)*.6+n(p*11.-uT*vec2(.2,.07)+uSeed*2.)*.4;
-float m=smoothstep(1.0,.2,r+(w-.5)*.95);float a=m*(.45+.55*w)*uA;gl_FragColor=vec4(.012,.05,.085,a);}` });
+    // school body: soft dark sprites, one per fish. A tight ball overlaps into one dark mass that shifts as the boids turn;
+    // a loose school stays a thin shadow. Individual fish only resolve (3D mesh) when close and shallow.
+    this.cPos = new Float32Array(MAXF * 3); this.cA = new Float32Array(MAXF); this.cS = new Float32Array(MAXF);
+    const cg = new THREE.BufferGeometry(); cg.setAttribute('position', new THREE.BufferAttribute(this.cPos, 3).setUsage(THREE.DynamicDrawUsage)); cg.setAttribute('aA', new THREE.BufferAttribute(this.cA, 1).setUsage(THREE.DynamicDrawUsage)); cg.setAttribute('aS', new THREE.BufferAttribute(this.cS, 1).setUsage(THREE.DynamicDrawUsage));
+    this.uScale = { value: 600 };
+    const sprite = (additive, col) => new THREE.ShaderMaterial({ transparent: true, depthWrite: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending, uniforms: { uScale: this.uScale, uCol: { value: new THREE.Color(col) } },
+      vertexShader: 'attribute float aA;attribute float aS;uniform float uScale;varying float vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);gl_Position=projectionMatrix*mv;vA=aA;gl_PointSize=clamp(aS*uScale/max(.3,-mv.z),1.,96.);}',
+      fragmentShader: 'uniform vec3 uCol;varying float vA;void main(){float d=length(gl_PointCoord-.5)*2.;float a=smoothstep(1.,.05,d);a*=a;gl_FragColor=vec4(uCol,a*vA);}' });
+    this.cloud = new THREE.Points(cg, sprite(false, 0x021a2a)); this.cloud.frustumCulled = false; this.cloud.renderOrder = 3; S.scene.add(this.cloud);
+    this.gPos = new Float32Array(MAXF * 3); this.gA = new Float32Array(MAXF); this.gS = new Float32Array(MAXF);
+    const gg = new THREE.BufferGeometry(); gg.setAttribute('position', new THREE.BufferAttribute(this.gPos, 3).setUsage(THREE.DynamicDrawUsage)); gg.setAttribute('aA', new THREE.BufferAttribute(this.gA, 1).setUsage(THREE.DynamicDrawUsage)); gg.setAttribute('aS', new THREE.BufferAttribute(this.gS, 1).setUsage(THREE.DynamicDrawUsage));
+    this.glint = new THREE.Points(gg, sprite(true, 0xe8f6ff)); this.glint.frustumCulled = false; this.glint.renderOrder = 5; S.scene.add(this.glint);
     // leaping bait
     const NJ = 90; this.jp = new Float32Array(NJ * 3); this.jv = new Float32Array(NJ * 3); this.jl = new Float32Array(NJ).fill(-1);
     const jg = new THREE.BufferGeometry(); jg.setAttribute('position', new THREE.BufferAttribute(this.jp, 3));
@@ -64,11 +66,10 @@ float m=smoothstep(1.0,.2,r+(w-.5)*.95);float a=m*(.45+.55*w)*uA;gl_FragColor=ve
     const s = { sp, id: Math.random(), x, z, d, d0: d, heading: o.heading ?? R() * TAU, al: 0, fl: 0, fleeDir: 0, n, lone, fish: [], act: 0, actT: rt(3, 30), actOn: !!o.feeding, vx: 0, vz: 0, surf: 0, surfT: rt(10, 30), flick: 0, rad: lone ? 1.2 : Math.max(2.4, Math.sqrt(n) * (sp.len * 2.2 + .25)) , fleeT0: 0, born: this.t };
     if (o.feeding) { s.act = 1; s.actT = rt(50, 120); }
     for (let i = 0; i < n; i++) {
-      const rr = s.rad * Math.sqrt(R()), a = R() * TAU, span = sp.pattern === 'ball' ? s.rad * .55 : lone ? .3 : 1.1;
+      const rr = s.rad * Math.sqrt(R()), a = R() * TAU, span = sp.pattern === 'ball' ? Math.min(s.rad * .3, 1.5) : lone ? .3 : 1.1;
       const f = { s, sp, ox: Math.cos(a) * rr, oz: Math.sin(a) * rr, ly: (R() - .5) * 2 * span, x: x + Math.cos(a) * rr, z: z + Math.sin(a) * rr, y: -d, vx: 0, vy: 0, vz: 0, ph: R() * TAU, flash: 0, th: 0, lenK: rt(.85, 1.15), alpha: 0 };
       s.fish.push(f);
     }
-    if (!lone) { s.patch = new THREE.Mesh(this.patchGeo, this.patchMat()); s.patch.renderOrder = 3; s.patch.frustumCulled = false; this.S.scene.add(s.patch); }
     this.schools.push(s); return s;
   }
   totalFish() { let c = 0; for (const s of this.schools) c += s.fish.length; return c; }
@@ -182,16 +183,9 @@ float m=smoothstep(1.0,.2,r+(w-.5)*.95);float a=m*(.45+.55*w)*uA;gl_FragColor=ve
       }
       /* surface cues */
       if (s.d < 3.2 && dB < 320) {
-        const rate = (s.act * 9 + (s.fl > 0 && s.d < 3 ? 6 : 0)) * (s.lone ? .3 : 1); s._acc = (s._acc || 0) + rate * dt;
-        while (s._acc > 1) { s._acc--; const a = R() * TAU, rr = s.rad * Math.sqrt(R()) * .9; this.splashAt(s.x + Math.cos(a) * rr, s.z + Math.sin(a) * rr, rt(.04, .13)); }
+        const rate = (s.act * 16 * Math.min(1, s.fish.length / 60) + (s.fl > 0 && s.d < 3 ? 8 : 0)) * (s.lone ? .3 : 1); s._acc = (s._acc || 0) + rate * dt;
+        while (s._acc > 1) { s._acc--; const a = R() * TAU, rr = s.rad * Math.sqrt(R()) * .9; this.splashAt(s.x + Math.cos(a) * rr, s.z + Math.sin(a) * rr, rt(.07, .2)); }
         if (s.act > .5 && R() < dt * 2.2 * s.act * (sp.pattern === 'ball' ? 1.4 : 1)) this.jump(s.x + rt(-1, 1) * s.rad * .8, s.z + rt(-1, 1) * s.rad * .8);
-      }
-      /* dark patch */
-      if (s.patch) {
-        const pv = this.visibility(s.x, s.d + .3, s.z, cam, env, true), dens = Math.min(1, s.fish.length / 70) * (sp.pattern === 'ball' ? 1.15 : 1);
-        const sz = s.rad * (2.2 + .25 * Math.sin(this.t * .7 + s.id * 9)) * (1 + .15 * s.act); s.patch.scale.set(sz, 1, sz * (1 + .15 * Math.sin(s.id * 20)));
-        s.patch.position.set(s.x, -.25 - s.d * .08, s.z); s.patch.rotation.y = this.t * .05 + s.id * 7;
-        const u = s.patch.material.uniforms; u.uA.value = clamp(pv * 3.0 * dens, 0, .68); u.uT.value = this.t;
       }
     }
     this.updateInstances(cam, env);
@@ -209,22 +203,29 @@ float m=smoothstep(1.0,.2,r+(w-.5)*.95);float a=m*(.45+.55*w)*uA;gl_FragColor=ve
     this.jumpers.geometry.attributes.position.needsUpdate = true;
   }
   updateInstances(cam, env) {
-    const m = this.mesh, d = this.dummy, col = this.col; let i = 0;
-    const va = this.visA.array, fa = this.flashA.array;
+    const m = this.mesh, d = this.dummy, col = this.col; let i = 0, ci = 0, gi = 0;
+    const va = this.visA.array, fa = this.flashA.array, cp = this.cPos, ca = this.cA, cs = this.cS, gp = this.gPos, ga = this.gA, gs = this.gS;
+    const sz = this.S.renderer.getSize(this.tmpS || (this.tmpS = new THREE.Vector2())); this.uScale.value = sz.y * this.S.renderer.getPixelRatio() * .5 / Math.tan(this.S.camera.fov * Math.PI / 360);
     for (const s of this.schools) {
       for (const f of s.fish) {
         if (i >= MAXF) break;
         const dd = Math.hypot(f.x - cam.x, f.z - cam.z);
-        let vis = dd > 260 ? 0 : this.visibility(f.x, -f.y, f.z, cam, env);
+        const vis = dd > 300 ? 0 : this.visibility(f.x, -f.y, f.z, cam, env);
+        const visBody = dd > 300 ? 0 : this.visibility(f.x, -f.y, f.z, cam, env, true);   // the blurred mass is seen further / deeper than a single fish
         const flashVis = f.flash > 0 ? this.visibility(f.x, Math.max(0, -f.y * .35), f.z, cam, env) : 0;
-        f.alpha = vis; const a = clamp(vis * 3.2, 0, 1);
-        va[i] = a; fa[i] = f.flash * clamp(flashVis * 3, 0, 1);
-        const L = f.sp.len * f.lenK * (1 + (f.sp.id === 'sardine' ? 0 : 0)), sc = Math.max(L, dd > 25 ? L * 1.6 : L);   // distant fish get bumped a little so patches don't alias
+        f.alpha = vis; const close = 1 - sstep(9, 24, dd), a = clamp(vis * 3.2, 0, 1) * close;
+        va[i] = a; fa[i] = f.flash * clamp(flashVis * 3, 0, 1) * close;
+        const L = f.sp.len * f.lenK, sc = Math.max(L, dd > 25 ? L * 1.6 : L);
         d.position.set(f.x, f.y, f.z); d.rotation.set(-clamp(f.vy * .2, -.5, .5), Math.atan2(f.vx, f.vz), Math.sin(this.t * 3 + f.ph) * .04, 'YXZ');
         d.scale.set(sc * .3 * 1.5, sc * .5 * 1.5, sc * 1.5); d.updateMatrix(); m.setMatrixAt(i, d.matrix);
         col.setHex(f.sp.color); m.setColorAt(i, col); i++;
+        const al = clamp(visBody * 1.6, 0, .55) * (1 - .4 * close);
+        if (al > .004) { cp[ci * 3] = f.x; cp[ci * 3 + 1] = f.y; cp[ci * 3 + 2] = f.z; ca[ci] = al; cs[ci] = L * 5 + dd * .014 + .15; ci++; }
+        if (f.flash > .05 && flashVis > .01) { gp[gi * 3] = f.x; gp[gi * 3 + 1] = f.y + .05; gp[gi * 3 + 2] = f.z; ga[gi] = clamp(f.flash * flashVis * 7, 0, 1); gs[gi] = L * 1.5 + dd * .006 + .06; gi++; }
       }
     }
     m.count = i; this.count = i; m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; this.visA.needsUpdate = true; this.flashA.needsUpdate = true;
+    const cg = this.cloud.geometry, gg = this.glint.geometry; cg.setDrawRange(0, ci); gg.setDrawRange(0, gi);
+    cg.attributes.position.needsUpdate = cg.attributes.aA.needsUpdate = cg.attributes.aS.needsUpdate = true; gg.attributes.position.needsUpdate = gg.attributes.aA.needsUpdate = gg.attributes.aS.needsUpdate = true;
   }
 }

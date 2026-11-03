@@ -1,64 +1,70 @@
 // @ts-nocheck
-/* TRAWL  — "Hold the Lane": a depth-keeping + tow-power game (steering a lagging winch through scrolling fish layers, rocks and tension).
-   SEINE  — "Pursing Rhythm": a two-lane rhythm game; every on-beat pull tightens the purse line and closes the leak gap under the ring.
+/* TRAWL  — "Haul the Bag": the 3D tow decided what is in the bag; this is the haul-back. Hold SPACE to wind the winch, keep the warp tension in the green band,
+   ease off on wave surges and rock snags, and bring the bag up before time runs out. Too much tension bursts fish out of the codend; too little lets the bag sag and spill.
+   PURSE SEINE — "Pursing Rhythm": a two-lane rhythm game; every on-beat pull tightens the purse line and closes the leak gap under the ring.
    GILL   — "Pick the Net": a sorting conveyor; fish are tangled in the mesh and must be freed (several clicks) and sorted keep / release before the drum swallows them. */
 import { SPECIES, clamp } from '../game/config.js';
 import { retention } from '../game/netgen.js';
 import { Frame, GameCanvas, W, H, R, drawFish, sea, bar, keepRoll, tally, hex } from './common';
 
-/* ============================================================ TRAWL ============================================================ */
+/* ============================================================ TRAWL: HAUL THE BAG ============================================================ */
 function trawlFactory(cfg: any) {
-  const net = cfg.net, comp = cfg.comp, Dm = Math.min(13.5, cfg.seabed - .5), top = 34, ppm = (H - 120) / Dm, mx = 170, N = cfg.pool.length, span = 33;
-  const fish = cfg.pool.map((p: any, i: number) => ({ i, p, sp: SPECIES[p.sp], x: W + 30 + 200, y: p.depth, spawn: (i + R() * .6) / Math.max(N, 1) * span, state: 'wait', keep: keepRoll(p, cfg), lat: R(), ph: R() * 7, vy: 0 }));
-  const rocks: any[] = []; for (let i = 0; i < 6; i++) rocks.push({ x: 300 + i * 190 + R() * 80, h: .8 + R() * 1.6, w: 60 + R() * 40 });
-  const lag = 1.7 / (1 + net.weight / 300 + comp.strain * 1.1), openBase = clamp(cfg.opening * (.55 + .45 * comp.openMul), .22, 1);
-  const G: any = { t: 0, y: Math.min(cfg.depth || 3, Dm - 1), target: Math.min(cfg.depth || 3, Dm - 1), surge: false, tension: .08, over: 0, snags: 0, caught: [], escaped: 0, missed: 0, result: null, snagT: 0, scroll: 0, fx: [] };
-  const potential = fish.filter((f: any) => f.keep).length;
+  const net = cfg.net, comp = cfg.comp, env = cfg.env, Dm = Math.min(13.5, cfg.seabed - .5), top = 40, ppm = (H - 130) / Dm, N = cfg.pool.length;
+  const bagFish = cfg.pool.map((p: any, i: number) => ({ i, p, sp: SPECIES[p.sp], keep: keepRoll(p, cfg), lost: false, ph: R() * 7, ox: R(), oy: R(), vx: 0, vy: 0, out: 0 }));
+  const potential = bagFish.filter((f: any) => f.keep).length, load = clamp(N / (120 + net.mouthW * 14), 0, 1);
+  const startDepth = clamp(cfg.depth || 3, 1, Dm), haulRate = .1 / (1 + load * .7 + comp.strain * .6) * (1 - .1 * env.seaDiff);   // fraction of the way up per second at full haul
+  const G: any = { t: 0, pos: 0, T: .15, hold: false, inBand: 0, over: 0, slack: 0, lost: 0, surge: 0, snag: 0, nextSnag: 6 + R() * 5, snags: 0, fx: [], result: null, limit: 46, started: false };
+  const base = () => .14 + .3 * load + .22 * comp.strain;
   const finish = (why: string) => {
-    let kept = G.caught.filter((f: any) => f.keep); if (why === 'overload') kept = kept.filter(() => R() > .3);
-    const idx = kept.map((f: any) => f.i), score = potential ? clamp(idx.length / potential, 0, 1) : 0, perfect = potential >= 3 && score >= .85 && !G.snags && why === 'done';
-    G.result = { caught: tally(cfg, idx), caughtIdx: idx, score, perfect, headline: why === 'overload' ? 'Winch overload — hauling early' : perfect ? 'PERFECT TOW' : 'Trawl hauled', delay: 900,
-      tip: !N ? 'The trawl swept an empty patch. Tow through dark patches and gull-marked water, then haul.' : why === 'overload' ? `The ${net.name} is too big for this boat (${comp.label.toLowerCase()}). A smaller net or a stronger boat keeps the tension down.` : G.snags ? 'A rock snagged the net. Keep the lower edge of the mouth clear of the seabed.' : G.missed > idx.length ? 'Many fish passed over or under the mouth — match the winch depth to the layer.' : 'Smooth tow. Surge only when fast fish are about to pass.' };
+    const keptList = bagFish.filter((f: any) => !f.lost && f.keep), idx = keptList.map((f: any) => f.i), score = potential ? clamp(idx.length / potential, 0, 1) : 0;
+    const band = G.inBand / Math.max(G.t, 1), perfect = potential >= 3 && score >= .9 && band > .55;
+    G.result = { caught: tally(cfg, idx), caughtIdx: idx, score, perfect, potential, delay: 900, headline: !N ? 'Empty bag' : why === 'time' ? 'Hauled too slowly' : perfect ? 'PERFECT HAUL' : 'Bag on deck',
+      tip: !N ? 'The trawl came up empty. Tow slowly at 2–4 knots through a dark patch or boiling water, with the warp length matched to the school depth (Q longer = deeper, E shorter = shallower).' : why === 'time' ? 'You ran out of time with fish still in the water. Keep SPACE held while the tension is in the green.' : G.lost > N * .3 ? 'The codend burst open whenever tension hit the red. Ease off on surges and on snags.' : band < .4 ? 'Stay in the green band — lots of time in slack or red costs fish.' : 'Smooth haul.' };
   };
   G.update = (dt: number) => {
-    if (G.result) return; G.t += dt; const surge = G.surge ? 1 : 0, spdK = (1 + .55 * surge) * (G.snagT > 0 ? .5 : 1), scroll = 105 * spdK * clamp(.6 + comp.speedMul * .5, .5, 1.1); G.scroll += scroll * dt; G.snagT = Math.max(0, G.snagT - dt);
-    const prev = G.y; G.y += clamp(G.target - G.y, -lag * 1.4, lag * 1.4) * Math.min(1, dt * 2) * 1.0; const dy = Math.abs(G.y - prev) / dt;
-    const open = clamp(openBase * (.7 + .3 * clamp(spdK, 0, 1.4)) , .15, 1), Hpx = net.mouthH * ppm * open * 1.15 + 14;
-    G.Hpx = Hpx; G.open = open;
-    G.tension += ((comp.strain * .08 + surge * (.26 + .15 * comp.strain) + dy * .04 + (G.snagT > 0 ? .5 : 0)) - (surge ? 0 : .13 + .05 * (1 - comp.strain)) * (G.tension > .1 ? 1 : 0) ) * dt; G.tension = clamp(G.tension, 0, 1.05);
-    G.over = G.tension >= 1 ? G.over + dt : Math.max(0, G.over - dt);
-    for (const r of rocks) { r.x -= scroll * dt; if (r.x < -120) { r.x += 1200; r.h = .8 + R() * 1.6; } if (Math.abs(r.x - mx) < r.w * .5 + 14 && G.y + net.mouthH * open / 2 > Dm - r.h && G.snagT <= 0) { G.snagT = 1.1; G.snags++; G.tension = Math.min(1.05, G.tension + .35); G.fx.push({ x: mx, y: top + (Dm - r.h / 2) * ppm, t: 0 }); for (const f of G.caught) if (R() < .12) { f.lost = true; } G.caught = G.caught.filter((f: any) => !f.lost); } }
-    for (const f of fish) {
-      if (f.state === 'wait') { if (G.t >= f.spawn) { f.state = 'swim'; f.x = W + 20; } continue; } if (f.state !== 'swim') continue;
-      f.ph += dt * 9; const away = f.sp.speed * 14; f.x -= (scroll - away) * dt; const dx = f.x - mx;
-      if (dx < 130 && dx > 5 && Math.abs(f.y - G.y) * ppm > Hpx / 2 - 6 && R() < dt * f.sp.shy * .9 * clamp(f.sp.speed / 3, .3, 1.2)) f.vy = (f.y > G.y ? 1 : -1) * f.sp.dive * .8;   // fast, shy fish dodge out of the mouth
-      f.y = clamp(f.y + f.vy * dt, .5, Dm - .3);
-      if (dx <= 0 && dx > -14) { const hit = Math.abs(f.y - G.y) * ppm < Hpx / 2 && f.lat < clamp(net.mouthW / 14, .35, 1) * (.75 + .25 * open); if (hit) { f.state = 'in'; G.caught.push(f); } else { f.state = 'gone'; G.missed++; } }
-    }
-    if (fish.every((f: any) => f.state === 'in' || f.state === 'gone') || G.t > 38) finish('done'); else if (G.over > 1.8) finish('overload');
+    if (G.result) return; G.t += dt; G.surge = Math.sin(G.t * 1.9 + 1) * (.07 + .1 * env.seaDiff) + Math.sin(G.t * .8) * .04;
+    G.nextSnag -= dt; if (G.nextSnag <= 0 && G.pos < .85 && cfg.depth > Dm - 4) { G.snag = .9; G.snags++; G.nextSnag = 9 + R() * 6; G.fx.push({ t: 0, s: 'snag!' }); } else if (G.nextSnag <= 0) G.nextSnag = 8 + R() * 6;
+    G.snag = Math.max(0, G.snag - dt);
+    const tgt = base() + (G.hold ? .36 + .12 * comp.strain : 0) + G.surge + (G.snag > 0 ? .4 : 0);
+    G.T += (tgt - G.T) * Math.min(1, dt * 3.2); G.T = clamp(G.T, 0, 1.1);
+    if (G.hold && G.T < 1) G.pos = Math.min(1, G.pos + haulRate * dt * (G.T > .75 ? .5 : 1) * (G.snag > 0 ? .3 : 1));
+    if (G.T >= .3 && G.T <= .72) G.inBand += dt;
+    // tension in the red bursts fish out of the codend; slack lets the bag sag and spill a few
+    const risk = G.T > .86 ? (G.T - .86) * 7 + .25 : G.T < .1 && G.pos > .05 ? .12 : 0; G.over = risk;
+    for (const f of bagFish) { if (f.lost) { f.out += dt; continue; } if (R() < risk * dt * .22 / Math.max(1, N / 14)) { f.lost = true; G.lost++; G.fx.push({ t: 0, s: '−fish' }); } }
+    if (G.pos >= 1) finish('done'); else if (G.t > G.limit) finish('time');
   };
-  G.key = (e: KeyboardEvent, d: boolean) => { if (e.code === 'Space' || e.code === 'ShiftLeft') G.surge = d; if (d) { if (e.code === 'KeyW' || e.code === 'ArrowUp') G.target = clamp(G.target - 1, .8, Dm - 1); if (e.code === 'KeyS' || e.code === 'ArrowDown') G.target = clamp(G.target + 1, .8, Dm - 1); } };
-  G.pointer = (t: string, x: number, y: number) => { if (t === 'move' || t === 'down') G.target = clamp((y - top - 3) / ppm, .8, Dm - 1); };
+  G.key = (e: KeyboardEvent, d: boolean) => { if (e.code === 'Space' || e.code === 'KeyG' || e.code === 'KeyF') G.hold = d; };
+  G.pointer = (t: string) => { if (t === 'down') G.hold = true; if (t === 'up') G.hold = false; };
   G.draw = (c: CanvasRenderingContext2D) => {
-    sea(c, G.t, Dm, top, H - 52, ppm); const sb = top + 3 + Dm * ppm;
-    c.fillStyle = '#6d5b3e'; c.fillRect(0, sb, W, 40); for (const r of rocks) { c.fillStyle = '#4b4e53'; c.beginPath(); c.moveTo(r.x - r.w / 2, sb); c.quadraticCurveTo(r.x, sb - r.h * ppm * 1.5, r.x + r.w / 2, sb); c.fill(); }
-    for (const f of fish) { if (f.state !== 'swim') continue; drawFish(c, f.x, top + 3 + f.y * ppm, Math.max(8, f.sp.len * 46), f.sp, Math.PI, f.ph, f.keep ? 1 : .55); }
-    const my = top + 3 + G.y * ppm, Hp = G.Hpx || 40; // net cone + mouth
-    c.fillStyle = 'rgba(235,235,215,.16)'; c.strokeStyle = 'rgba(240,235,210,.8)'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(mx, my - Hp / 2); c.lineTo(mx + 280, my - 8); c.lineTo(mx + 280, my + 8); c.lineTo(mx, my + Hp / 2); c.closePath(); c.fill(); c.stroke();
-    c.save(); c.clip(); c.strokeStyle = 'rgba(240,235,210,.25)'; for (let x = mx - (G.scroll % 18); x < mx + 300; x += 18) { c.beginPath(); c.moveTo(x, my - Hp); c.lineTo(x + 40, my + Hp); c.stroke(); } c.restore();
-    c.strokeStyle = '#3a2b14'; c.lineWidth = 6; c.beginPath(); c.moveTo(mx, my - Hp / 2); c.lineTo(mx, my + Hp / 2); c.stroke(); c.strokeStyle = '#c9a96a'; c.lineWidth = 2; c.beginPath(); c.moveTo(mx, my); c.lineTo(0, top - 10); c.stroke();
-    c.fillStyle = '#ff6a1a'; for (let i = 0; i < 5; i++) { c.beginPath(); c.arc(mx, my - Hp / 2 + i * 0, 4, 0, 7); } for (const f of G.caught) { const k = f.i * 37 % 100; drawFish(c, mx + 120 + (k % 10) * 14, my + (k % 7 - 3) * 2.2, 11, f.sp, Math.PI, G.t * 8); }
-    for (const e of G.fx) { e.t += .02; c.strokeStyle = `rgba(255,200,120,${1 - e.t})`; c.beginPath(); c.arc(e.x, e.y, 10 + e.t * 40, 0, 7); c.stroke(); } G.fx = G.fx.filter((e: any) => e.t < 1);
-    c.fillStyle = 'rgba(8,20,32,.7)'; c.fillRect(0, 0, W, 28); c.fillStyle = '#fff'; c.font = '600 13px system-ui'; c.fillText(`In the bag: ${G.caught.length} fish (~$${Math.round(G.caught.reduce((s: number, f: any) => s + f.sp.value, 0))})`, 12, 19);
-    c.font = '11px ui-monospace,monospace'; c.fillStyle = '#bfe3f0'; c.fillText(`mouth ${(net.mouthW * (G.open || 1)).toFixed(1)}×${(net.mouthH * (G.open || 1)).toFixed(1)} m · opening ${Math.round((G.open || 0) * 100)}% · ${comp.label}`, 300, 18);
-    bar(c, 16, H - 44, 230, 14, G.tension, G.tension > .75 ? '#ff6a5a' : '#ffc060', 'winch tension'); bar(c, 16, H - 24, 230, 14, G.t / 38, '#8fd0ff', 'tow time'); c.fillStyle = G.surge ? '#ffb347' : 'rgba(255,255,255,.7)'; c.font = '600 13px system-ui'; c.fillText(G.surge ? 'SURGE!' : 'steady tow', 280, H - 28);
+    sea(c, G.t, Dm, top, H - 60, ppm); const x0 = 250, bagY = top + 3 + (startDepth * (1 - G.pos)) * ppm + 10;
+    c.fillStyle = '#5b4a35'; c.fillRect(0, top - 34, 160, 34); c.fillStyle = '#c9b690'; c.fillRect(0, top - 40, 150, 8);   // boat stern
+    c.strokeStyle = '#d6c8a0'; c.lineWidth = 3; c.beginPath(); c.moveTo(140, top - 24); c.lineTo(x0, bagY - 36); c.stroke();
+    // net body + codend (bag)
+    const bw = 44 + 40 * load; c.fillStyle = 'rgba(235,235,215,.18)'; c.strokeStyle = 'rgba(240,235,210,.85)'; c.lineWidth = 1.6; c.beginPath(); c.moveTo(x0 - 14, bagY - 36); c.lineTo(x0 - bw / 2, bagY - 6); c.quadraticCurveTo(x0 - bw / 2 - 6, bagY + 36 + load * 20, x0, bagY + 44 + load * 24); c.quadraticCurveTo(x0 + bw / 2 + 6, bagY + 36 + load * 20, x0 + bw / 2, bagY - 6); c.lineTo(x0 + 14, bagY - 36); c.closePath(); c.fill(); c.stroke();
+    c.save(); c.clip(); c.strokeStyle = 'rgba(240,235,210,.3)'; for (let x = x0 - 80; x < x0 + 80; x += 12) { c.beginPath(); c.moveTo(x, bagY - 40); c.lineTo(x + 40, bagY + 90); c.moveTo(x, bagY - 40); c.lineTo(x - 40, bagY + 90); c.stroke(); } c.restore();
+    for (const f of bagFish) { if (f.lost) { const k = Math.min(1, f.out / 1.6); drawFish(c, x0 + (f.ox - .5) * bw + k * 120 * (f.ox < .5 ? -1 : 1), bagY + 8 + f.oy * 26 + k * 70, 14, f.sp, (f.ox < .5 ? Math.PI : 0) + .6, G.t * 8, 1 - k); } else drawFish(c, x0 + (f.ox - .5) * bw * .8, bagY + 6 + f.oy * (28 + load * 22), Math.max(10, f.sp.len * 30), f.sp, f.ox * 6, G.t * 6 + f.ph, f.keep ? 1 : .6); }
+    // panel
+    c.fillStyle = 'rgba(8,20,32,.78)'; c.beginPath(); c.roundRect(470, 44, 310, 372, 16); c.fill();
+    c.fillStyle = '#fff'; c.font = '600 14px system-ui'; c.fillText('WINCH', 490, 72); c.font = '12px system-ui'; c.fillStyle = '#bfe3f0';
+    c.fillText(G.hold ? 'hauling…' : 'HOLD SPACE (or press the mouse button) to haul', 490, 92);
+    // tension gauge (vertical)
+    const gx = 500, gy = 110, gh = 270, gw = 36; c.fillStyle = 'rgba(0,0,0,.5)'; c.fillRect(gx, gy, gw, gh);
+    const yT = (v: number) => gy + gh - gh * clamp(v / 1.1, 0, 1); c.fillStyle = 'rgba(255,90,70,.45)'; c.fillRect(gx, yT(1.1), gw, yT(.86) - yT(1.1)); c.fillStyle = 'rgba(110,230,150,.55)'; c.fillRect(gx, yT(.72), gw, yT(.3) - yT(.72)); c.fillStyle = 'rgba(255,200,90,.3)'; c.fillRect(gx, yT(.1), gw, yT(0) - yT(.1));
+    c.fillStyle = '#fff'; c.fillRect(gx - 6, yT(G.T) - 2, gw + 12, 4); c.font = '11px ui-monospace,monospace'; c.fillText('tension', gx - 6, gy - 6); c.fillStyle = '#9ff0b8'; c.fillText('keep here', gx + gw + 8, (yT(.3) + yT(.72)) / 2 + 4); c.fillStyle = '#ff9a8a'; c.fillText('bursts fish', gx + gw + 8, yT(.98)); c.fillStyle = '#ffd890'; c.fillText('slack: spills', gx + gw + 8, yT(.04));
+    bar(c, 640, 112, 120, 14, G.pos, '#7be0a8', 'bag up'); bar(c, 640, 136, 120, 14, G.t / G.limit, '#8fd0ff', 'time');
+    c.fillStyle = '#fff'; c.font = '12px ui-monospace,monospace'; c.fillText(`fish aboard: ${bagFish.filter((f: any) => !f.lost).length}/${N}`, 640, 180); c.fillText(`lost: ${G.lost}`, 640, 198);
+    c.fillStyle = '#bfe3f0'; c.fillText(`depth ${(startDepth * (1 - G.pos)).toFixed(1)} m`, 640, 222); c.fillText(`${comp.label}`, 640, 240);
+    c.fillStyle = G.over > 0 ? '#ff7a6a' : G.T < .3 ? '#ffd890' : '#9ff0b8'; c.font = '600 13px system-ui'; c.fillText(G.snag > 0 ? 'SNAG — let go!' : G.T > .86 ? 'TOO TIGHT — ease off' : G.T < .3 ? (G.hold ? 'easy…' : 'pull!') : 'good tension', 640, 290);
+    for (const e of G.fx) { e.t += .016; c.fillStyle = `rgba(255,170,120,${1 - e.t})`; c.font = '600 14px system-ui'; c.fillText(e.s, x0 + 40, bagY - 30 - e.t * 40); } G.fx = G.fx.filter((e: any) => e.t < 1);
+    c.fillStyle = 'rgba(8,20,32,.7)'; c.fillRect(0, 0, W, 28); c.fillStyle = '#fff'; c.font = '600 13px system-ui'; c.fillText(`Haul the bag — ${N} fish in the codend (~$${Math.round(bagFish.filter((f: any) => !f.lost).reduce((s: number, f: any) => s + f.sp.value, 0))})`, 12, 19);
     if (G.result) { c.fillStyle = 'rgba(5,14,24,.55)'; c.fillRect(0, 0, W, H); c.fillStyle = G.result.perfect ? '#ffe28a' : '#fff'; c.font = '700 32px system-ui'; c.textAlign = 'center'; c.fillText(G.result.headline, W / 2, H / 2); c.textAlign = 'left'; }
   };
   return G;
 }
 export function TrawlGame({ cfg, onDone }: any) {
-  return (<Frame title="Trawl — Hold the Lane" cfg={cfg} tagline="Move the mouth to the depth where the fish layers pass. Your winch lags (heavy or oversized nets lag more), surging opens the mouth but loads the winch, and rocks snag low nets." keysHint="Mouse / W S moves the mouth up and down · hold Space or Shift to surge · keep tension below the red">
-    <GameCanvas cfg={cfg} factory={trawlFactory} onDone={onDone} /></Frame>);
+  return (<Frame title="Trawl — Haul the Bag" cfg={cfg} tagline="The tow is over and the bag is full of whatever the net swept up. Wind it in without bursting the codend." keysHint="Hold Space / mouse button to haul · release on surges · stay in the green band">
+    <GameCanvas cfg={cfg} factory={trawlFactory} onDone={onDone} help={{ title: 'Trawl — haul back the bag', goal: 'Bring the bag to the surface before time runs out and lose as few fish as possible.', steps: ['The fish already in the codend came from your 3D tow (right depth + speed = more fish).', 'HOLD SPACE (or the mouse button) to wind the winch. Hauling raises the warp tension; releasing lets it fall.', 'Keep the white marker in the GREEN band. In the red the codend bursts and fish escape; with slack the bag sags and spills.', 'Waves surge the load and rocks can snag a low net: release the moment the tension nears red or a SNAG appears.', 'Bigger nets on a weak boat haul slower and strain more.'], tip: 'Tap-hold in short pulses — hold while tension is falling, let go as it climbs.' }} /></Frame>);
 }
 
 /* ============================================================ PURSE SEINE ============================================================ */
@@ -114,7 +120,7 @@ function seineFactory(cfg: any) {
 }
 export function SeineGame({ cfg, onDone }: any) {
   return (<Frame title="Purse Seine — Pursing Rhythm" cfg={cfg} tagline="Haul the purse line in time with the beats. Each clean pull closes the ring; every miss lets it slacken and the fish leak out through the gap. Fast tempo closes quicker but the windows are narrow." keysHint="F / ← and J / → (or click the lanes) on the beat · Space toggles steady / fast tempo">
-    <GameCanvas cfg={cfg} factory={seineFactory} onDone={onDone} /></Frame>);
+    <GameCanvas cfg={cfg} factory={seineFactory} onDone={onDone} help={{ title: 'Purse seine — draw the purse line', goal: 'Close the ring under the school before time runs out, without letting fish leak through the gap.', steps: ['The ring of net is closed. Beats fall down the two lanes on the right.', 'Press F (or ← / A, or click the left lane) for the LEFT lane and J (or → / D, or click the right lane) for the RIGHT lane exactly when a beat reaches the line.', 'Every clean pull tightens the purse line and shrinks the ring; every miss slackens it and widens the leak gap.', 'Space toggles fast tempo: closes quicker but the timing window is narrower.', 'Fish that leak out of the gap are gone; the closer the ring, the more you keep.'], tip: 'Start with the steady tempo until the rhythm feels natural.' }} /></Frame>);
 }
 
 /* ============================================================ GILLNET ============================================================ */
@@ -167,5 +173,5 @@ function gillFactory(cfg: any) {
 }
 export function GillGame({ cfg, onDone }: any) {
   return (<Frame title="Gillnet — Pick the Net" cfg={cfg} tagline="The net rolls over the drum. Fish are tangled — click them free before they reach it, keep the good ones, release undersize, and free any bycatch gently. Mesh matched to the fish tangles them harder." keysHint="Click = free / keep · right-click or Shift-click = release · bycatch is red-ringed">
-    <GameCanvas cfg={cfg} factory={gillFactory} onDone={onDone} /></Frame>);
+    <GameCanvas cfg={cfg} factory={gillFactory} onDone={onDone} help={{ title: 'Gillnet — pick the net', goal: 'Free the good fish, release undersize ones and save any bycatch before the drum swallows them.', steps: ['The net rolls in from the right. Fish are tangled in the mesh.', 'CLICK a fish repeatedly to untangle it (the number of clicks depends on how tangled it is). A freed fish is KEPT.', 'RIGHT-CLICK or SHIFT-CLICK a fish to RELEASE it. Do this for small juveniles and for turtles / dolphins (bycatch).', 'Whatever reaches the drum on the left is lost — work from the left edge first.', 'Harming bycatch or keeping undersize fish costs you a fine.'], tip: 'Mesh that matches the fish size tangles more fish.' }} /></Frame>);
 }

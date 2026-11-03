@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { SPECIES, clamp } from '../game/config.js';
 import { retention } from '../game/netgen.js';
 
@@ -31,19 +31,36 @@ export function tally(cfg: any, keptIdx: number[]) {
 }
 
 /* Hosts a canvas game. factory returns {update(dt), draw(ctx), key(e,down), pointer(type,x,y,e), result?} */
-export function GameCanvas({ cfg, factory, onDone, keys }: any) {
-  const ref = useRef<HTMLCanvasElement>(null);
+export function GameCanvas({ cfg, factory, onDone, help }: any) {
+  const ref = useRef<HTMLCanvasElement>(null), started = useRef(!help), [go, setGo] = useState(!help);
+  const start = () => { if (!started.current) { started.current = true; setGo(true); } };
   useEffect(() => {
     const cv = ref.current!, ctx = cv.getContext('2d')!; const G = factory(cfg); let raf = 0, last = performance.now(), fin = 0, dead = false;
     const pos = (e: PointerEvent) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) / r.width * W, (e.clientY - r.top) / r.height * H]; };
-    const pd = (e: PointerEvent) => { e.preventDefault(); const p = pos(e); G.pointer && G.pointer('down', p[0], p[1], e); }, pu = (e: PointerEvent) => { const p = pos(e); G.pointer && G.pointer('up', p[0], p[1], e); }, pm = (e: PointerEvent) => { const p = pos(e); G.pointer && G.pointer('move', p[0], p[1], e); };
-    const kd = (e: KeyboardEvent) => { if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault(); e.stopPropagation(); if (!e.repeat) G.key && G.key(e, true); }, ku = (e: KeyboardEvent) => { e.stopPropagation(); G.key && G.key(e, false); };
-    cv.addEventListener('pointerdown', pd); addEventListener('pointerup', pu); cv.addEventListener('pointermove', pm); cv.addEventListener('contextmenu', (e) => e.preventDefault()); addEventListener('keydown', kd, true); addEventListener('keyup', ku, true);
-    const loop = (now: number) => { if (dead) return; const dt = Math.min(.05, (now - last) / 1000); last = now; G.update(dt); G.draw(ctx); if (G.result && !fin) { fin = now; } if (fin && now - fin > (G.result.delay ?? 1400)) { dead = true; onDone(G.result); return; } raf = requestAnimationFrame(loop); };
+    const pd = (e: PointerEvent) => { e.preventDefault(); if (!started.current) return; const p = pos(e); G.pointer && G.pointer('down', p[0], p[1], e); }, pu = (e: PointerEvent) => { if (!started.current) return; const p = pos(e); G.pointer && G.pointer('up', p[0], p[1], e); }, pm = (e: PointerEvent) => { const p = pos(e); G.pointer && G.pointer('move', p[0], p[1], e); };
+    const kd = (e: KeyboardEvent) => { if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault(); e.stopPropagation(); if (!started.current) { if (e.code === 'Space' || e.code === 'Enter') start(); return; } if (!e.repeat) G.key && G.key(e, true); }, ku = (e: KeyboardEvent) => { e.stopPropagation(); if (started.current) G.key && G.key(e, false); };
+    const ctxm = (e: Event) => e.preventDefault();
+    cv.addEventListener('pointerdown', pd); addEventListener('pointerup', pu); cv.addEventListener('pointermove', pm); cv.addEventListener('contextmenu', ctxm); addEventListener('keydown', kd, true); addEventListener('keyup', ku, true);
+    const loop = (now: number) => { if (dead) return; const dt = Math.min(.05, (now - last) / 1000); last = now; if (started.current) G.update(dt); G.draw(ctx); if (G.result && !fin) { fin = now; } if (fin && now - fin > (G.result.delay ?? 1400)) { dead = true; onDone(G.result); return; } raf = requestAnimationFrame(loop); };
     raf = requestAnimationFrame(loop); (window as any).__game = G;
-    return () => { dead = true; cancelAnimationFrame(raf); cv.removeEventListener('pointerdown', pd); removeEventListener('pointerup', pu); cv.removeEventListener('pointermove', pm); removeEventListener('keydown', kd, true); removeEventListener('keyup', ku, true); };
+    return () => { dead = true; (window as any).__game = null; cancelAnimationFrame(raf); cv.removeEventListener('pointerdown', pd); removeEventListener('pointerup', pu); cv.removeEventListener('pointermove', pm); cv.removeEventListener('contextmenu', ctxm); removeEventListener('keydown', kd, true); removeEventListener('keyup', ku, true); };
   }, []);
-  return <canvas ref={ref} width={W} height={H} className="w-full rounded-2xl border border-white/20 shadow-2xl touch-none select-none" style={{ aspectRatio: `${W}/${H}`, background: '#0a2a44' }} />;
+  return (
+    <div className="relative">
+      <canvas ref={ref} width={W} height={H} className="w-full rounded-2xl border border-white/20 shadow-2xl touch-none select-none" style={{ aspectRatio: `${W}/${H}`, background: '#0a2a44' }} />
+      {help && !go && (
+        <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-slate-950/70 backdrop-blur-[2px] p-4" data-testid="game-help">
+          <div className="max-w-[560px] rounded-2xl border border-white/25 bg-slate-900/95 p-5 text-white shadow-2xl">
+            <div className="text-lg font-semibold">{help.title}</div>
+            <div className="mt-1 text-[12px] text-amber-200">GOAL: {help.goal}</div>
+            <ol className="mt-3 space-y-1.5 text-[12.5px] leading-snug text-sky-50">{help.steps.map((t: string, i: number) => <li key={i} className="flex gap-2"><span className="mt-[1px] inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-sky-500/40 text-[11px] font-semibold">{i + 1}</span><span>{t}</span></li>)}</ol>
+            {help.tip && <div className="mt-3 text-[11.5px] text-sky-200/85">Tip: {help.tip}</div>}
+            <button data-testid="game-start" onClick={start} className="pe mt-4 w-full rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-amber-200">Start — press Space</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Frame({ title, tagline, cfg, children, keysHint }: any) {
