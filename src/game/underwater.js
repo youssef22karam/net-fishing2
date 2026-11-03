@@ -36,13 +36,13 @@ vec4 uwShade(vec3 alb,vec3 wp,float lit,float alpha,float spec){
 const TONE = '\n#include <tonemapping_fragment>\n#include <colorspace_fragment>\n';
 
 /* ---------------------------------------------------------------- netting: procedural diamond mesh, knots, lit twine ---------------------------------------------------------------- */
-export function netMaterial(color, tw = .12, opacity = 1) {
+export function netMaterial(color, tw = .12, opacity = 1, film = .06) {
   return new THREE.ShaderMaterial({
     transparent: true, depthWrite: false, side: THREE.DoubleSide,
-    uniforms: { ...uwU(), uColor: { value: new THREE.Color(color) }, uTw: { value: tw }, uOpa: { value: opacity } },
+    uniforms: { ...uwU(), uColor: { value: new THREE.Color(color) }, uTw: { value: tw }, uOpa: { value: opacity }, uFilm: { value: film } },
     vertexShader: `varying vec2 vUv;varying vec3 vW;varying vec3 vN;
 void main(){vUv=uv;vec4 wp=modelMatrix*vec4(position,1.);vW=wp.xyz;vN=normalize(mat3(modelMatrix)*normal);gl_Position=projectionMatrix*viewMatrix*wp;}`,
-    fragmentShader: `varying vec2 vUv;varying vec3 vW;varying vec3 vN;uniform vec3 uColor;uniform float uTw,uOpa;${UW_GLSL}
+    fragmentShader: `varying vec2 vUv;varying vec3 vW;varying vec3 vN;uniform vec3 uColor;uniform float uTw,uOpa,uFilm;${UW_GLSL}
 void main(){
   vec2 uv=vUv;float a=uv.x-uv.y,b=uv.x+uv.y;
   float da=abs(a-floor(a+.5))*.7071,db=abs(b-floor(b+.5))*.7071;
@@ -53,8 +53,8 @@ void main(){
   float prof=sqrt(clamp(1.-(dl*dl)/(w*w),0.,1.));
   float knot=1.-smoothstep(w*1.3,w*2.2+fw*.7,length(vec2(da,db)));
   float m=max(line*en,knot*clamp(en*1.5,0.,1.));
-  m=mix(m,clamp(uTw*4.5,0.,.5),smoothstep(.1,.28,fw));
-  float film=.06*(1.-m);
+  m=mix(m,clamp(uTw*2.4,0.,.2),smoothstep(.12,.34,fw));
+  float film=uFilm*(1.-m);
   vec3 N=normalize(cross(dFdx(vW),dFdy(vW))+1e-7),V=normalize(cameraPosition-vW);if(dot(N,V)<0.)N=-N;
   vec3 L=normalize(uWSun);float lit=clamp(dot(N,L)*.5+.5,0.,1.);
   float spec=pow(max(dot(reflect(-L,N),V),0.),18.)*prof*.55+knot*.12;
@@ -111,16 +111,16 @@ export function fishGeometry() {
   return g;
 }
 
-export function fishMaterial() {
+export function fishMaterial(cut = 1) {
   return new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false, side: THREE.DoubleSide, uniforms: { ...uwU() },
+    transparent: true, depthWrite: false, side: THREE.DoubleSide, uniforms: { ...uwU(), uCut: { value: cut } },
     vertexShader: `attribute vec3 aCol;attribute vec3 aBel;attribute vec4 aFx;attribute float aPart;
-varying vec3 vW;varying vec3 vWN;varying vec3 vLN;varying float vPart;varying vec3 vCol;varying vec3 vBel;varying vec4 vFx;varying float vZ;uniform float uWTime;
+varying vec3 vW;varying vec3 vWN;varying vec3 vLN;varying float vPart;varying vec3 vCol;varying vec3 vBel;varying vec4 vFx;varying float vZ;varying float vFar;uniform float uWTime;
 void main(){vec3 p=position;float tk=smoothstep(.15,-.5,p.z);float rate=6.+9.*aFx.z;
   p.x+=sin(uWTime*rate+aFx.y-p.z*5.5)*.1*tk*(.35+.65*aFx.z);
-  mat4 im=instanceMatrix;vec4 wp=modelMatrix*im*vec4(p,1.);vW=wp.xyz;vWN=normalize(mat3(modelMatrix)*mat3(im)*normal);vLN=normal;vPart=aPart;vCol=aCol;vBel=aBel;vFx=aFx;vZ=position.z;
+  mat4 im=instanceMatrix;vec4 wp=modelMatrix*im*vec4(p,1.);vW=wp.xyz;vWN=normalize(mat3(modelMatrix)*mat3(im)*normal);vLN=normal;vPart=aPart;vCol=aCol;vBel=aBel;vFx=aFx;vZ=position.z;vFar=1.-smoothstep(46.,72.,distance(cameraPosition,wp.xyz));
   gl_Position=projectionMatrix*viewMatrix*wp;}`,
-    fragmentShader: `varying vec3 vW;varying vec3 vWN;varying vec3 vLN;varying float vPart;varying vec3 vCol;varying vec3 vBel;varying vec4 vFx;varying float vZ;${UW_GLSL}
+    fragmentShader: `varying vec3 vW;varying vec3 vWN;varying vec3 vLN;varying float vPart;varying vec3 vCol;varying vec3 vBel;varying vec4 vFx;varying float vZ;varying float vFar;uniform float uCut;${UW_GLSL}
 void main(){
   vec3 N=normalize(vWN),V=normalize(cameraPosition-vW);if(dot(N,V)<0.)N=-N;vec3 L=normalize(uWSun);
   float up=normalize(vLN).y;
@@ -137,6 +137,8 @@ void main(){
   float gl=pow(max(dot(reflect(-V,N),L),0.),26.)*(band*.9+.1)*(1.-vPart)*(.12+vFx.x*2.2);
   float eye=1.-smoothstep(.0,.03,length(vec2(abs(vLN.x)-.075,vZ-.36)));alb*=1.-eye*.9;
   vec4 c=uwShade(alb,vW,lit,1.,gl+vFx.x*.35);
+  float dc=1.-smoothstep(5.2,8.,max(-vW.y,0.));
+  c.a*=vFar*mix(1.,dc,uCut);
   if(c.a<.015)discard;
   gl_FragColor=c;${TONE}}`,
   });
@@ -163,4 +165,36 @@ export function billboards(mat, pos, a, s, c) {
   const ia = (arr, n) => new THREE.InstancedBufferAttribute(arr, n).setUsage(THREE.DynamicDrawUsage);
   g.setAttribute('aPos', ia(pos, 3)); g.setAttribute('aA', ia(a, 1)); g.setAttribute('aS', ia(s, 1)); if (c) g.setAttribute('aC', ia(c, 3)); g.instanceCount = 0;
   const m = new THREE.Mesh(g, mat); m.frustumCulled = false; return m;
+}
+
+/* the dark patch a shallow school makes on the sea: one flat soft decal just under the surface per school (never one per fish).
+   Per instance: aPos (x,y,z) | aP (diameter m, alpha, heading, elongation) | aSeed. Alpha is computed on the CPU from depth, distance, clarity, light and sea state. */
+export function surfacePatchMaterial() {
+  return new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, uniforms: { uT: { value: 0 } },
+    vertexShader: `attribute vec3 aPos;attribute vec4 aP;attribute float aSeed;varying vec2 vUv;varying vec4 vP;varying float vS;
+void main(){vUv=position.xz;vP=aP;vS=aSeed;vec3 w=aPos+vec3(position.x*aP.x,0.,position.z*aP.x);gl_Position=projectionMatrix*viewMatrix*vec4(w,1.);}`,
+    fragmentShader: `varying vec2 vUv;varying vec4 vP;varying float vS;uniform float uT;
+float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float vn(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(h(i),h(i+vec2(1,0)),f.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),f.y);}
+void main(){
+  float c=cos(vP.z),s=sin(vP.z);vec2 q=vec2(c*vUv.x+s*vUv.y,-s*vUv.x+c*vUv.y)*2.;
+  q.y*=vP.w;
+  float d=length(q),ang=atan(q.y,q.x);
+  float edge=1.+.2*sin(ang*2.+vS)+.13*sin(ang*3.-vS*1.7+uT*.12)+.08*sin(ang*5.+vS*2.3+uT*.2);
+  float body=1.-smoothstep(.35,1.,d/edge);
+  vec2 sw=vec2(cos(uT*.15+vS),sin(uT*.15+vS))*.6;
+  float m=.55+.45*vn(q*5.+sw*(1.-d)+vS)+.2*(vn(q*13.-sw*2.)-.5);
+  float a=clamp(body*body*m*vP.y,0.,.92);
+  gl_FragColor=vec4(vec3(.005,.02,.034),a);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`,
+  });
+}
+export function patchGeometry(max) {
+  const g = new THREE.InstancedBufferGeometry(), q = new THREE.PlaneGeometry(1, 1); q.rotateX(-Math.PI / 2);
+  g.index = q.index; g.setAttribute('position', q.attributes.position);
+  const ia = (n) => new THREE.InstancedBufferAttribute(new Float32Array(max * n), n).setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('aPos', ia(3)); g.setAttribute('aP', ia(4)); g.setAttribute('aSeed', ia(1)); g.instanceCount = 0; return g;
 }

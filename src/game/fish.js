@@ -1,11 +1,13 @@
 // @ts-nocheck
 /* Fish: schools that move like real bait balls (rotating mill, amoeba shaped envelope, breathing, silver flash waves, vacuoles around the boat),
    lone stragglers for the trawl to pick up one by one, natural visual cues only.
-   Rendering: every fish is a real body (instanced, tail beating in the vertex shader, counter-shaded, mirror flanks that glitter when they bank) shaded by the shared
+   Rendering (no dots, no billboards, no markers): near the camera every fish is a real body at true size, shaded by the shared underwater model and cut off below ~8 m;
+   a SHALLOW school (top within ~6 m) also paints one dark patch under the surface + ripples + silver flashes; deeper schools show nothing (fish finder only).
+   Old rendering notes: every fish is a real body (instanced, tail beating in the vertex shader, counter-shaded, mirror flanks that glitter when they bank) shaded by the shared
    underwater model in underwater.js, plus a soft teal mass where fish overlap. NO markers of any kind. */
 import * as THREE from 'three';
 import { SPECIES, SPECIES_LIST, clamp, lerp, sstep, TAU, seaEnv } from './config.js';
-import { fishGeometry, fishMaterial, schoolCloudMaterial, glintMaterial, billboards } from './underwater.js';
+import { fishGeometry, fishMaterial, surfacePatchMaterial, patchGeometry, glintMaterial, billboards } from './underwater.js';
 
 const R = Math.random, rt = (a, b) => a + (b - a) * R();
 const MAXF = window.__lite ? 700 : 1500;
@@ -22,18 +24,17 @@ export class FishWorld {
     g.setAttribute('aCol', this.aCol); g.setAttribute('aBel', this.aBel); g.setAttribute('aFx', this.aFx);
     this.mesh = new THREE.InstancedMesh(g, fishMaterial(), MAXF); this.mesh.frustumCulled = false; this.mesh.renderOrder = .45; this.mesh.count = 0; S.scene.add(this.mesh);
     this.spCol = {}; for (const sp of SPECIES_LIST) this.spCol[sp.id] = { c: new THREE.Color(sp.color), b: new THREE.Color(sp.belly), st: sp.id === 'mackerel' ? 1 : 0 };
-    // school body: soft teal mass; overlapping fish thicken it into a bait ball that shifts as the school turns
-    this.cPos = new Float32Array(MAXF * 3); this.cA = new Float32Array(MAXF); this.cS = new Float32Array(MAXF); this.cC = new Float32Array(MAXF * 3);
-    this.uScale = { value: 600 };
-    this.cloud = billboards(schoolCloudMaterial(), this.cPos, this.cA, this.cS, this.cC); this.cloud.renderOrder = .4; S.scene.add(this.cloud);
+    // surface patch of a shallow school: ONE soft dark decal per school just under the sea surface (alpha from depth / distance / clarity / light / sea state)
+    this.PMAX = 48; this.patch = new THREE.Mesh(patchGeometry(this.PMAX), surfacePatchMaterial()); this.patch.frustumCulled = false; this.patch.renderOrder = .38; S.scene.add(this.patch);
     // silver glints (additive)
     this.gPos = new Float32Array(MAXF * 3); this.gA = new Float32Array(MAXF); this.gS = new Float32Array(MAXF);
     this.glint = billboards(glintMaterial(), this.gPos, this.gA, this.gS); this.glint.renderOrder = .8; S.scene.add(this.glint);
-    // leaping bait
-    const NJ = 90; this.jp = new Float32Array(NJ * 3); this.jv = new Float32Array(NJ * 3); this.jl = new Float32Array(NJ).fill(-1);
-    const jg = new THREE.BufferGeometry(); jg.setAttribute('position', new THREE.BufferAttribute(this.jp, 3));
-    this.jumpers = new THREE.Points(jg, new THREE.PointsMaterial({ color: 0xeaf4ff, size: .1, sizeAttenuation: true, transparent: true, opacity: .95, depthWrite: false }));
-    this.jumpers.frustumCulled = false; this.jumpers.renderOrder = 5; S.scene.add(this.jumpers); this.NJ = NJ; this.jn = 0;
+    // leaping bait: small real fish bodies on a ballistic arc (short-lived, only from shallow active schools)
+    const NJ = 60; this.NJ = NJ; this.jn = 0; this.jp = new Float32Array(NJ * 3); this.jv = new Float32Array(NJ * 3); this.jl = new Float32Array(NJ).fill(-1); this.jsp = new Array(NJ).fill(null);
+    const jg = fishGeometry(); this.jAC = new THREE.InstancedBufferAttribute(new Float32Array(NJ * 3), 3); this.jAB = new THREE.InstancedBufferAttribute(new Float32Array(NJ * 3), 3); this.jAF = new THREE.InstancedBufferAttribute(new Float32Array(NJ * 4), 4);
+    jg.setAttribute('aCol', this.jAC); jg.setAttribute('aBel', this.jAB); jg.setAttribute('aFx', this.jAF);
+    this.jumpers = new THREE.InstancedMesh(jg, fishMaterial(0), NJ); this.jumpers.frustumCulled = false; this.jumpers.renderOrder = .47; this.jumpers.count = NJ; S.scene.add(this.jumpers);
+    this.zAxis = new THREE.Vector3(0, 0, 1); this.tmpQ = new THREE.Quaternion(); this.tmpD = new THREE.Vector3();
     this.dummy = new THREE.Object3D(); this.tmpV = new THREE.Vector3(); this.waveId = 1;
   }
 
@@ -88,13 +89,15 @@ export class FishWorld {
     for (const s of this.schools) { if (Math.hypot(s.x - x, s.z - z) > half + s.rad + 6) continue; for (const f of s.fish) { if (f.cap) continue; if (Math.hypot(f.x - x, f.z - z) > half) continue; const b = Math.floor(clamp(-f.y / maxD, 0, .999) * bins); out[b] += 1; sz[b] = Math.max(sz[b], f.sp.len); } }
     return { dens: out, size: sz };
   }
-  scare(x, z, r, amt) { for (const s of this.schools) { const d = Math.hypot(s.x - x, s.z - z); if (d < r + s.rad) { s.al += amt * (1 - clamp(d / (r + s.rad), 0, 1) * .6) * (.4 + s.sp.shy); if (s.al >= 1) this.flee(s, x, z); } } }
+  scare(x, z, r, amt) { for (const s of this.schools) { const d = Math.hypot(s.x - x, s.z - z); if (d < r + s.rad) { s.al += amt * (1 - clamp(d / (r + s.rad), 0, 1) * .6) * (.4 + s.sp.shy) * (1 - .6 * sstep(1.5, 6, s.top ?? s.d)); if (s.al >= 1) this.flee(s, x, z); } } }
   flee(s, tx, tz) {
     if (s.fl > 0) return; s.fl = rt(6, 10); s.al = 0; s.fleeT0 = this.t; s.fleeDir = Math.atan2(s.z - tz, s.x - tx);
     s.wave = { x: s.x, z: s.z, t0: this.t, sp: 9, id: this.waveId++ };
     this.events.push({ type: 'flee', school: s, x: s.x, z: s.z });
   }
-  isShallowFeeding(s) { return !s.lone && s.act > .45 && s.d < 3.6; }
+  isShallowFeeding(s) { return !s.lone && s.act > .35 && (s.top ?? s.d) < 5; }
+  /* 0..1: how readable this school is from the surface by depth alone (continuous, exactly 0 beyond ~7.6 m) */
+  depthCue(s) { return 1 - sstep(1.0, 7.6, s.top ?? s.d); }
 
   /* ------------ visibility of a fish mass: distance, depth, clarity, light/sun angle, weather, sea state ------------ */
   visibility(x, depth, z, cam, env, patch = false) {
@@ -124,8 +127,9 @@ export class FishWorld {
       if (sp.pattern === 'surfacing') { s.surfT -= dt; if (s.surfT <= 0) { s.surf = s.surf > 0 ? 0 : rt(5, 8); s.surfT = s.surf > 0 ? s.surf : rt(25, 45); } }
       const actT = (s.actOn && s.fl <= 0 ? 1 : 0) * (s.d0 < 3.6 ? 1 : 0) + (s.surf > 0 ? 1 : 0); s.act += (clamp(actT, 0, 1) - s.act) * Math.min(1, dt * .5);
       /* alertness from boat noise, hull shadow and wake */
-      const hear = 14 + 55 * noise * sp.shy, shadow = dB < 7 && s.d < 3 ? .09 : 0;
-      if (dB < hear) s.al += ((noise * .55 + .03) * sp.shy * (1 - dB / hear) * 1.1 + shadow * sp.shy) * dt;
+      /* a school several metres down hears a hull / tow far less than a surface school does (the hull passing overhead does not make a mid-water school bolt) */
+      const mf = 1 - .85 * sstep(1.5, 6, s.top ?? s.d), hear = (14 + 55 * noise * sp.shy) * (.55 + .45 * mf), shadow = dB < 7 && s.d < 3 ? .09 : 0;
+      if (dB < hear) s.al += ((noise * .55 + .03) * sp.shy * (1 - dB / hear) * 1.1 * mf + shadow * sp.shy) * dt;
       s.al = Math.max(0, s.al - .1 * dt);
       if (s.al >= 1) this.flee(s, bx, bz);
       /* school motion */
@@ -178,7 +182,7 @@ export class FishWorld {
         f.dart -= dt; if (f.dart <= 0) { f.dart = rt(2, 9) / (1 + s.act); const ang = R() * TAU; f.vx += Math.cos(ang) * sp.speed * .9; f.vz += Math.sin(ang) * sp.speed * .9; if (R() < .3) { f.flash = Math.max(f.flash, .8); f.rollK = (R() < .5 ? -1 : 1) * rt(.8, 1.3); } }
         // predators: the hull, its bow wave and shadow open a vacuole in the school
         const bdx = f.x - bx, bdz = f.z - bz, bd = Math.hypot(bdx, bdz);
-        if (bd < 11 && f.y > -6) { const ww = (11 - bd) / 11; ax += bdx / (bd + .1) * ww * 6 * sp.shy; az += bdz / (bd + .1) * ww * 6 * sp.shy; if (bd < 5) s.al += .02 * dt * 60 * ww * dt * sp.shy; }
+        if (bd < 11 && f.y > -6) { const ww = (11 - bd) / 11 * (1 - .9 * sstep(2, 5.5, -f.y)); ax += bdx / (bd + .1) * ww * 6 * sp.shy; az += bdz / (bd + .1) * ww * 6 * sp.shy; if (bd < 5) s.al += .02 * dt * 60 * ww * dt * sp.shy; }
         if (ctx.netThreat && ctx.netThreat.r) { const nx = f.x - ctx.netThreat.x, nz = f.z - ctx.netThreat.z, nd = Math.hypot(nx, nz); if (nd < ctx.netThreat.r * 2 && f.y > -(ctx.netThreat.depth + 3)) { const ww = 1 - nd / (ctx.netThreat.r * 2); ax += nx / (nd + .1) * ww * 9; az += nz / (nd + .1) * ww * 9; } }
         if (fleeing && sp.flee === 'burst') { const sx = f.x - s.x, sz = f.z - s.z, sd = Math.hypot(sx, sz) + .1; ax += sx / sd * 2.5; az += sz / sd * 2.5; }
         const pvx = f.vx, pvz = f.vz;
@@ -195,11 +199,15 @@ export class FishWorld {
         f.flash = Math.max(0, f.flash - dt * 2.6); f.rollK *= Math.exp(-dt * 3);
       }
       if (done) { s.fish = s.fish.filter((f) => !f.dead); if (!s.fish.length) { this.removeSchool(s); continue; } }
-      /* surface cues */
-      if (s.d < 3.2 && dB < 320) {
-        const rate = (s.act * 16 * Math.min(1, s.fish.length / 60) + (s.fl > 0 && s.d < 3 ? 8 : 0)) * (s.lone ? .3 : 1); s._acc = (s._acc || 0) + rate * dt;
-        while (s._acc > 1) { s._acc--; const a = R() * TAU, rr = s.rad * Math.sqrt(R()) * .9; this.splashAt(s.x + Math.cos(a) * rr, s.z + Math.sin(a) * rr, rt(.07, .2)); }
-        if (s.act > .5 && R() < dt * 2.2 * s.act * (sp.pattern === 'ball' ? 1.4 : 1)) this.jump(s.x + rt(-1, 1) * s.rad * .8, s.z + rt(-1, 1) * s.rad * .8);
+      /* real school extent in depth (mean ± 1.7 sd, clipped to the actual fish): what the sounder sees and what the net must match */
+      { let c = 0, sum = 0, sq = 0, mn = 99, mx = 0; for (const f of F) { if (f.cap) continue; const dp = -f.y; c++; sum += dp; sq += dp * dp; if (dp < mn) mn = dp; if (dp > mx) mx = dp; }
+        if (c) { const mean = sum / c, sd = Math.sqrt(Math.max(0, sq / c - mean * mean)); s.mean = mean; s.top = Math.max(mn, mean - 1.7 * sd, 0); s.bot = Math.min(mx, mean + 1.7 * sd); s.live = c; } else { s.mean = s.d; s.top = s.d; s.bot = s.d; s.live = 0; } }
+      /* surface cues: fade continuously with the depth of the TOP of the school; nothing at all for a deep school */
+      const cueD = this.depthCue(s);
+      if (cueD > .02 && dB < 320 && !s.lone) {
+        const rate = ((.35 + s.act * 14) * Math.min(1, s.fish.length / 60) + (s.fl > 0 ? 7 : 0)) * cueD; s._acc = (s._acc || 0) + rate * dt;
+        while (s._acc > 1) { s._acc--; const a = R() * TAU, rr = s.rad * Math.sqrt(R()) * .9; this.splashAt(s.x + Math.cos(a) * rr, s.z + Math.sin(a) * rr, rt(.06, .2) * (.45 + .55 * cueD)); }
+        if (cueD > .5 && s.act > .5 && R() < dt * 2.2 * s.act * (sp.pattern === 'ball' ? 1.4 : 1)) this.jump(s.x + rt(-1, 1) * s.rad * .8, s.z + rt(-1, 1) * s.rad * .8, sp);
       }
     }
     if (lones < STRAGGLERS && this.frame % 20 === 0) this.spawnStraggler(boat, false);
@@ -211,34 +219,58 @@ export class FishWorld {
     this.spawnSchool(sp, boat.position.x + Math.cos(a) * d, boat.position.z + Math.sin(a) * d, { feeding: sp.depth[1] < 4 && R() < .55 });
   }
   splashAt(x, z, k) { if (this.S.splash) this.S.splash(x, z, k); }
-  jump(x, z) { for (let t = 0; t < 4; t++) { const i = (this.jn++) % this.NJ; if (this.jl[i] > 0) continue; this.jp.set([x, -.05, z], i * 3); this.jv.set([rt(-1.2, 1.2), rt(2.2, 3.6), rt(-1.2, 1.2)], i * 3); this.jl[i] = 1; break; } }
+  jump(x, z, sp) { for (let t = 0; t < 3; t++) { const i = (this.jn++) % this.NJ; if (this.jl[i] > 0) continue; this.jp.set([x, -.05, z], i * 3); this.jv.set([rt(-1.2, 1.2), rt(2.2, 3.6), rt(-1.2, 1.2)], i * 3); this.jl[i] = 1; this.jsp[i] = sp || SPECIES.sardine;
+      const c = this.spCol[this.jsp[i].id]; this.jAC.array.set([c.c.r, c.c.g, c.c.b], i * 3); this.jAB.array.set([c.b.r, c.b.g, c.b.b], i * 3); this.jAF.array.set([.7, R() * 6, 1, c.st], i * 4); break; } }
   updateJumpers(dt) {
-    for (let i = 0; i < this.NJ; i++) { if (this.jl[i] < 0) { this.jp[i * 3 + 1] = -50; continue; } const o = i * 3; this.jv[o + 1] -= 9.8 * dt; this.jp[o] += this.jv[o] * dt; this.jp[o + 1] += this.jv[o + 1] * dt; this.jp[o + 2] += this.jv[o + 2] * dt;
-      if (this.jp[o + 1] < 0 && this.jv[o + 1] < 0) { this.splashAt(this.jp[o], this.jp[o + 2], .06); this.jl[i] = -1; } }
-    this.jumpers.geometry.attributes.position.needsUpdate = true;
+    const d = this.dummy, q = this.tmpQ, v = this.tmpD;
+    for (let i = 0; i < this.NJ; i++) {
+      const o = i * 3;
+      if (this.jl[i] < 0) { d.position.set(0, -60, 0); d.scale.set(0, 0, 0); d.quaternion.identity(); d.updateMatrix(); this.jumpers.setMatrixAt(i, d.matrix); continue; }
+      this.jv[o + 1] -= 9.8 * dt; this.jp[o] += this.jv[o] * dt; this.jp[o + 1] += this.jv[o + 1] * dt; this.jp[o + 2] += this.jv[o + 2] * dt;
+      if (this.jp[o + 1] < 0 && this.jv[o + 1] < 0) { this.splashAt(this.jp[o], this.jp[o + 2], .06); this.jl[i] = -1; continue; }
+      v.set(this.jv[o], this.jv[o + 1], this.jv[o + 2]).normalize(); q.setFromUnitVectors(this.zAxis, v); const L = this.jsp[i].len * 1.0;
+      d.position.set(this.jp[o], this.jp[o + 1], this.jp[o + 2]); d.quaternion.copy(q); d.scale.set(L * .95, L * 1.0, L); d.updateMatrix(); this.jumpers.setMatrixAt(i, d.matrix);
+    }
+    this.jumpers.instanceMatrix.needsUpdate = true; this.jAC.needsUpdate = this.jAB.needsUpdate = this.jAF.needsUpdate = true;
+  }
+  /* readability of a school from the surface: depth of its top x distance x clarity x light x sea state x viewing angle x sun glare (all continuous) */
+  cue(s, cam, env) {
+    const dk = this.depthCue(s); if (dk <= .001) return { k: 0, a: 0 };
+    const dist = Math.hypot(s.x - cam.x, s.z - cam.z), camH = Math.max(cam.y - this.S.S.y, .5), sinE = camH / Math.hypot(dist, camH);
+    const ang = .28 + .72 * sstep(.03, .3, sinE), clar = lerp(.5, 1, env.clar), atmos = Math.exp(-dist * (.0032 + .011 * env.storm)) * (1 - sstep(260, 380, dist));
+    const light = .14 + .86 * env.light, sea = 1 / (1 + .22 * Math.pow(env.hs, 1.4)), su = this.S.U.uSun.value, sl = Math.hypot(su.x, su.z) + 1e-4, dd = dist + 1e-3;
+    const dot = Math.max(0, ((s.x - cam.x) / dd) * (su.x / sl) + ((s.z - cam.z) / dd) * (su.z / sl)), glare = clamp((Math.pow(dot, 6) * (1 - env.sunY) * .6 + Math.pow(dot, 40) * .3) * env.day, 0, .7);
+    const k = dk * clar * atmos * light * sea * ang * (1 - glare), dens = 1 - Math.exp(-(s.live || s.fish.length) / 38);
+    return { k, a: clamp(k * (.25 + .9 * dens) * 1.25, 0, .9) };
   }
   updateInstances(cam, env) {
-    const m = this.mesh, d = this.dummy; let i = 0, ci = 0, gi = 0;
-    const cp = this.cPos, ca = this.cA, cs = this.cS, cc = this.cC, gp = this.gPos, ga = this.gA, gs = this.gS, AC = this.aCol.array, AB = this.aBel.array, AF = this.aFx.array;
-    const sz = this.S.renderer.getSize(this.tmpS || (this.tmpS = new THREE.Vector2())); this.uScale.value = sz.y * this.S.renderer.getPixelRatio() * .5 / Math.tan(this.S.camera.fov * Math.PI / 360);
+    const m = this.mesh, d = this.dummy; let i = 0, gi = 0, pi = 0;
+    const gp = this.gPos, ga = this.gA, gs = this.gS, AC = this.aCol.array, AB = this.aBel.array, AF = this.aFx.array;
+    const PG = this.patch.geometry, pPos = PG.attributes.aPos.array, pP = PG.attributes.aP.array, pS = PG.attributes.aSeed.array; this.patch.material.uniforms.uT.value = this.t;
     for (const s of this.schools) {
-      const sc0 = this.spCol[s.sp.id];
+      const sc0 = this.spCol[s.sp.id], stream = s.sp.pattern === 'stream' || s.sp.pattern === 'surfacing' || s.sp.pattern === 'skim';
+      if (!s.lone && pi < this.PMAX) {
+        const c = this.cue(s, cam, env); s.cueK = c.k;
+        if (c.a > .01) { const el = stream ? 1.7 : 1, D = (s.rad * 2.5 + (s.top || 0) * .7 + 1.2) * (stream ? 1.15 : 1);
+          pPos[pi * 3] = s.x; pPos[pi * 3 + 1] = -.32; pPos[pi * 3 + 2] = s.z; pP[pi * 4] = D * el; pP[pi * 4 + 1] = c.a; pP[pi * 4 + 2] = s.heading; pP[pi * 4 + 3] = el; pS[pi] = s.seed; pi++; }
+      } else s.cueK = 0;
       for (const f of s.fish) {
         if (i >= MAXF) break;
-        const dx = f.x - cam.x, dz = f.z - cam.z, dd = Math.hypot(dx, dz); if (dd > 320) continue;
-        const L = f.sp.len * f.lenK, sc = Math.max(L, dd * .009), wd = sc * (f.sp.girth / .17);
-        d.position.set(f.x, f.y, f.z); d.rotation.set(-clamp(f.vy * .25, -.5, .5), f.hd, f.roll + f.rollK * 1.1 + Math.sin(this.t * 3 + f.ph) * .04, 'YXZ');
-        d.scale.set(wd, wd * 1.05, sc); d.updateMatrix(); m.setMatrixAt(i, d.matrix);
-        const k = f.tone; AC[i * 3] = sc0.c.r * k; AC[i * 3 + 1] = sc0.c.g * k; AC[i * 3 + 2] = sc0.c.b * k; AB[i * 3] = sc0.b.r; AB[i * 3 + 1] = sc0.b.g; AB[i * 3 + 2] = sc0.b.b;
-        AF[i * 4] = f.flash; AF[i * 4 + 1] = f.ph; AF[i * 4 + 2] = f.sw; AF[i * 4 + 3] = sc0.st; i++;
-        const close = 1 - sstep(9, 30, dd), visBody = this.visibility(f.x, -f.y, f.z, cam, env, true);
-        const al = clamp(visBody * 2.2, 0, .62) * (1 - .2 * close) * (f.cap ? 0 : 1);
-        if (al > .004 && !s.lone) { cp[ci * 3] = f.x; cp[ci * 3 + 1] = f.y; cp[ci * 3 + 2] = f.z; ca[ci] = al; cs[ci] = L * 9 + dd * .018 + .45; cc[ci * 3] = .004 + sc0.c.r * .1; cc[ci * 3 + 1] = .016 + sc0.c.g * .12; cc[ci * 3 + 2] = .03 + sc0.c.b * .14; ci++; }
-        if (f.flash > .05) { const fv = this.visibility(f.x, Math.max(0, -f.y * .35), f.z, cam, env); if (fv > .01) { gp[gi * 3] = f.x; gp[gi * 3 + 1] = f.y + .05; gp[gi * 3 + 2] = f.z; ga[gi] = clamp(f.flash * fv * 6, 0, 1); gs[gi] = L * 1.8 + dd * .006 + .06; gi++; } }
+        const dx = f.x - cam.x, dz = f.z - cam.z, dd = Math.hypot(dx, dz), L = f.sp.len * f.lenK;
+        if (dd < 76) {   // real fish bodies only near the camera, always at true size
+          const wd = L * (f.sp.girth / .17);
+          d.position.set(f.x, f.y, f.z); d.rotation.set(-clamp(f.vy * .25, -.5, .5), f.hd, f.roll + f.rollK * 1.1 + Math.sin(this.t * 3 + f.ph) * .04, 'YXZ');
+          d.scale.set(wd, wd * 1.05, L); d.updateMatrix(); m.setMatrixAt(i, d.matrix);
+          const k = f.tone; AC[i * 3] = sc0.c.r * k; AC[i * 3 + 1] = sc0.c.g * k; AC[i * 3 + 2] = sc0.c.b * k; AB[i * 3] = sc0.b.r; AB[i * 3 + 1] = sc0.b.g; AB[i * 3 + 2] = sc0.b.b;
+          AF[i * 4] = f.flash; AF[i * 4 + 1] = f.ph; AF[i * 4 + 2] = f.sw; AF[i * 4 + 3] = sc0.st; i++;
+        }
+        // silver flashes: only fish just under the surface, fading out by ~4.5 m, never from deeper fish
+        const dep = -f.y;
+        if (f.flash > .05 && dep < 4.5 && dd < 260 && !f.cap) { const fv = this.visibility(f.x, dep, f.z, cam, env) * (1 - sstep(1.2, 4.5, dep)); if (fv > .012 && gi < MAXF) { gp[gi * 3] = f.x; gp[gi * 3 + 1] = f.y + .04; gp[gi * 3 + 2] = f.z; ga[gi] = clamp(f.flash * fv * 7, 0, .9); gs[gi] = L * 2.2 + dd * .0025 + .04; gi++; } }
       }
     }
     m.count = i; this.count = i; m.instanceMatrix.needsUpdate = true; this.aCol.needsUpdate = this.aBel.needsUpdate = this.aFx.needsUpdate = true;
-    const cg = this.cloud.geometry, gg = this.glint.geometry; cg.instanceCount = ci; gg.instanceCount = gi;
-    for (const k of ['aPos', 'aA', 'aS', 'aC']) cg.attributes[k].needsUpdate = true; for (const k of ['aPos', 'aA', 'aS']) gg.attributes[k].needsUpdate = true;
+    PG.instanceCount = pi; for (const k of ['aPos', 'aP', 'aSeed']) PG.attributes[k].needsUpdate = true;
+    const gg = this.glint.geometry; gg.instanceCount = gi; for (const k of ['aPos', 'aA', 'aS']) gg.attributes[k].needsUpdate = true;
   }
 }

@@ -10,8 +10,8 @@ For GitHub upload / Arena: no file in this repo exceeds 30,000 bytes.
 
 - `src/engine/boat.js` (127,856 bytes) → `src/engine/parts/boat.part01–05.js`
 - `src/engine/sea.js` (81,351 bytes) → `src/engine/parts/sea.part01–03.js`
-- `src/game/nets3d.js` (36,497 bytes) → `src/game/parts/nets3d.part01–02.js`
-- `src/game/world.js` (40,275 bytes) → `src/game/parts/world.part01–02.js`
+- `src/game/nets3d.js` (24,859 bytes) → `src/game/parts/nets3d.part01.js` (single part)
+- `src/game/world.js` (41,269 bytes) → `src/game/parts/world.part01–02.js`
 
 Split is at line boundaries; parts are raw slices with nothing added.
 `tools/reassemble.mjs` concatenates the parts byte-for-byte back into the

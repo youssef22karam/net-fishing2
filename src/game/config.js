@@ -46,6 +46,8 @@ export const METHODS = {
 };
 export const METHOD_LIST = Object.values(METHODS);
 
+/* exact cash for catch values: the result panel, the hold and the sale all show / add this very number (cents) */
+export const fmtCash = (n) => n >= 1e4 ? '$' + n.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '$' + (Math.round(n * 100) / 100).toFixed(2);
 export const fmtMoney = (n) => n >= 1e12 ? '$' + (n / 1e12).toFixed(2) + 'T' : n >= 1e9 ? '$' + (n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? '$' + (n / 1e6).toFixed(2) + 'M' : n >= 1e4 ? '$' + (n / 1e3).toFixed(1) + 'k' : '$' + Math.round(n);
 
 /* sea state from the engine: a 0..1 difficulty plus raw numbers */

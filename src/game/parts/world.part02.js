@@ -31,21 +31,17 @@
       else if (this.cast.landed && !this.gameActive && !this.startAt && this.cast.settled && !this.cast.hauling && this.cast.sunkT > 26) this.cast.hauling = true;
       else if (this.t % .4 < dt) { const ph = this.cast.phase(); if (!this.gameActive) store.set({ netState: { text: { throw: 'Throwing…', opening: 'The net is spinning open in the air', landing: 'Splash — the lead line pulls the rim under', sinking: 'The net is sinking — the cut-away opens in a moment', closing: 'Closing the cord', hauling: `Hauling the net in · line tension ${this.cast.tension.toFixed(0)} N` }[ph] } }); }
     }
-    /* trawl: individual fish are swept in as the net passes; a school in the mouth fills the bag fast */
+    /* trawl: the catch is accumulated DURING the tow, fish by fish, as they cross the mouth (see TrawlRig.sweep); r.bag is the only catch list */
     if (this.rig) {
-      const r = this.rig, sp = spd * C.k, seabed = Math.max(14, 1.3 * (S.P.hs || 0) + 6); r.update(dt, boat, sp, seabed); this.rigT += dt; this.towAvg = lerp(this.towAvg || sp, sp, .02);
-      if (r.auto && !r.hauling && this.t - (this._autoT || 0) > .5) { this._autoT = this.t; const b = this.bestSchoolAhead(); if (b) { r.setDepth(b.d); if (Math.abs(store.get().trawl?.depth - r.tgt) > .2) store.set({ trawl: { depth: r.tgt, auto: true } }); } }
-      if (r.deploy > .7 && sp > .4 && r.spread > .2 && !r.hauling && r.fill() < 1) {
-        const ca = r.m, W = r.W, H = r.H, tx = ca.tx, tz = ca.tz;
-        for (const f of this.fw.fishNear(ca.x, ca.z, W * .75 + 3, 14)) {
-          const dx = f.x - ca.x, dz = f.z - ca.z, ax = dx * tx + dz * tz, lat = Math.abs(dx * -tz + dz * tx);
-          if (ax < -.5 || ax > sp * dt * 3 + 1.8 || lat > W / 2 || Math.abs(-f.y - r.depth) > H / 2 + .35) continue;
-          const p = clamp(1 - f.sp.speed / (sp * 1.6 + .5), .05, .92) * r.opening * (f.s.lone ? 1 : 1.6);
-          if (R() < clamp(p * dt * 9, 0, 1)) { r.bag.push({ f, depth: -f.y }); this.fw.capture(f, r); this.catchPop(f.sp); tick('good'); }
-        }
-      }
+      const r = this.rig, sp = spd, seabed = Math.max(14, 1.3 * (S.P.hs || 0) + 6), G = window.__game;   // boat.speed already includes the drag factor
+      if (this.gameActive && this.pending && this.pending.type === 'trawl' && G && G.pos !== undefined) r.setHaul(G.pos, G.T || 0);
+      r.update(dt, boat, sp, seabed, S.P.hs || 0); this.rigT += dt; this.towAvg = lerp(this.towAvg || sp, sp, .02);
+      if (r.auto && !r.hauling && this.t - (this._autoT || 0) > .5) { this._autoT = this.t; const b = this.bestSchoolAhead(); if (b) { r.setDepth(b.d); if (Math.abs((store.get().trawl?.depth ?? 0) - r.tgt) > .2) store.set({ trawl: { ...store.get().trawl, depth: r.tgt, auto: true } }); } }
+      const nt = r.net; r.sweep(this.fw, dt, nt.mesh[nt.meshIdx], this.strain, (f) => { if (this.t - (this._pop || 0) > .12) { this._pop = this.t; this.catchPop(f.sp); tick('good'); } });
       this.fw.scare(r.m.x, r.m.z, 14, noise * .1 * dt * 60 * .02);
-      if (this.t % .5 < dt) { const fl = r.fill(), feel = r.hauling ? 'hauling back' : !r.bag.length ? 'empty so far' : fl < .15 ? 'a little weight on the warps' : fl < .5 ? 'filling' : fl < .85 ? 'heavy' : 'bag is full'; store.set({ netState: { text: r.hauling ? `hauling the trawl · ${r.warp.toFixed(0)} m of warp out` : `trawl ${r.deploy < 1 ? 'opening ' + Math.round(r.deploy * 100) + '%' : 'towing'} · depth ${r.depth.toFixed(1)} m → ${r.tgt.toFixed(0)} m · ${r.bag.length} fish · ${(sp * 1.944).toFixed(1)} kn · ${feel}` } }); }
+      if (this.t % .5 < dt) { const fl = r.fill(), feel = r.hauling ? 'hauling back' : !r.bag.length ? 'empty so far' : fl < .15 ? 'a little weight on the warps' : fl < .5 ? 'filling' : fl < .85 ? 'heavy' : 'bag is full';
+        store.set({ trawl: store.get().trawl ? { ...store.get().trawl, fish: r.bag.length, escaped: r.escaped } : store.get().trawl });
+        if (!this.gameActive) store.set({ netState: { text: r.hauling ? `hauling the trawl · ${r.warp.toFixed(0)} m of warp out` : `trawl ${r.deploy < 1 ? 'opening ' + Math.round(r.deploy * 100) + '%' : 'towing'} · net depth ${r.depth.toFixed(1)} m (set ${r.tgt.toFixed(0)} m) · ${r.bag.length} fish in the codend${r.escaped ? ' · ' + r.escaped + ' slipped the mesh' : ''} · ${(sp * 1.944).toFixed(1)} kn · ${feel}` } }); }
       if (r.hauled && this.trawlPending && !this.gameActive) { this.trawlPending = false; if (r.bag.length) this.openTrawlGame(); else { r.dispose(); this.rig = null; store.set({ rig: null, trawl: null }); this.emptyHaul('The trawl'); } }
     }
     /* cast net with nothing under it: no mini-game */
@@ -54,7 +50,8 @@
     this.sonarT -= dt; if (this.sonarT <= 0) {
       this.sonarT = .25; const SB = this.sonar, sd = Math.max(14, 1.3 * (S.P.hs || 0) + 6), son = this.fw.sonar(boat.position.x, boat.position.z, 13, 28, 14);
       SB.cols.push({ d: son.dens, z: son.size, rig: this.rig ? this.rig.depth : -1, tgt: this.rig ? this.rig.tgt : -1 }); if (SB.cols.length > 150) SB.cols.shift(); SB.bottom = sd;
-      const a = this.bestSchoolAhead(); SB.ahead = a ? { dist: Math.max(0, Math.round(a.ax)), depth: a.d, n: a.n, sp: a.sp.id, lat: a.lat } : null;
+      SB.contacts = scanContacts(this); const a = SB.contacts.find((k) => k.ahead); SB.ahead = a ? { dist: Math.max(0, Math.round(a.dist)), depth: a.mean, n: a.n, sp: a.sp, lat: a.lat } : null;
+      const rg = this.rig; SB.net = rg && !rg.dead ? { depth: rg.depth, tgt: rg.tgt, H: rg.H, W: rg.W, fish: rg.bag.length, hauling: rg.hauling } : null;
     }
     /* seine */
     if (this.wall) {
@@ -73,7 +70,7 @@
       g.update(dt); g.buoyA && g.buoyA.update(dt); g.buoyB && g.buoyB.update(dt);
     }
     if (this.t - this.coachT > .25) { this.coachT = this.t; this.updateCoach(); }
-    if (this.t % .5 < dt) { store.set({ speedKn: Math.abs(boat.speed * C.k) * 1.944, boatPower: boat.power }); if (!this.cast && !this.rig && !this.wall && !this.gameActive && !this.layingGill && store.get().netState) store.set({ netState: null }); }
+    if (this.t % .5 < dt) { store.set({ speedKn: Math.abs(boat.speed) * 1.944, boatPower: boat.power }); if (!this.cast && !this.rig && !this.wall && !this.gameActive && !this.layingGill && store.get().netState) store.set({ netState: null }); }
   }
 
   /* --------------------------- "what do I do now?" coach: step list for the current method --------------------------- */

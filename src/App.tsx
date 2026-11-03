@@ -3,11 +3,12 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { World } from './game/world.js';
 import { store, useStore } from './game/store.js';
-import { SPECIES, BOAT_LIST, BOATS, METHOD_LIST, METHODS, fmtMoney } from './game/config.js';
+import { SPECIES, BOAT_LIST, BOATS, METHOD_LIST, METHODS, fmtMoney, fmtCash } from './game/config.js';
 import { genNet, compat, compatibleRange, NET_BANDS } from './game/netgen.js';
 import { buildNetPreview } from './game/netPreview.js';
 import CastGame from './games/CastGame';
-import { TrawlGame, SeineGame, GillGame } from './games/OtherGames';
+import { SeineGame, GillGame } from './games/OtherGames';
+import { TrawlGame } from './games/TrawlGame';
 import { FishFinder } from './ui/FishFinder';
 import { TouchControls, IS_TOUCH } from './ui/Touch';
 
@@ -79,11 +80,13 @@ function ResultPanel() {
         <div className={`text-2xl font-bold ${r.perfect ? 'text-amber-200' : ''}`}>{r.headline}</div>
         <div className="text-[11px] text-sky-200/80 mb-2">{r.name}</div>
         <div className="my-2 flex flex-wrap justify-center gap-1.5">{Object.entries(r.caught || {}).map(([k, n]: any) => <span key={k} className="rounded-full bg-white/10 px-2.5 py-1 text-xs">{n} × {SPECIES[k].name}</span>)}{!r.n && <span className="text-sm text-sky-100/80">No fish this time</span>}</div>
-        <div className="text-3xl font-semibold">{r.n ? '$' + r.value : '—'}</div>
+        <div className="text-3xl font-semibold" data-testid="result-value">{r.n ? fmtCash(r.value) : '—'}</div>
         {r.bonus > 1 && <div className="text-xs text-amber-200">perfect-streak bonus ×{r.bonus.toFixed(2)}</div>}
         {r.fine > 0 && <div className="text-xs text-rose-300">fines −${r.fine}</div>}
         <div className="mt-2 text-xs text-sky-100/90 leading-snug">{r.tip}</div>
-        <div className="mt-3 text-[11px] text-sky-200/70">catch efficiency {Math.round((r.score || 0) * 100)}%{r.potential !== undefined ? ` of ${r.potential} reachable fish` : ''}</div>
+        {r.type === 'trawl' && r.codend !== undefined
+          ? <div className="mt-3 text-[11px] text-sky-200/70" data-testid="result-codend">{r.codend} fish in the codend → <b className="text-white">{r.n} aboard</b>{r.codend - r.n > 0 ? ` · ${r.codend - r.n} spilled in the haul` : ''}{r.escaped ? ` · ${r.escaped} slipped through the mesh during the tow` : ''}</div>
+          : <div className="mt-3 text-[11px] text-sky-200/70">catch efficiency {Math.round((r.score || 0) * 100)}%{r.potential !== undefined ? ` of ${r.potential} reachable fish` : ''}</div>}
         <Btn active className="mt-3 !px-5 !py-1.5" on={() => { const f = r.fine || 0; if (f) store.set({ cash: store.get().cash - f }); store.set({ result: null }); }}>One more cast</Btn>
       </div>
     </div>
@@ -111,7 +114,7 @@ function Hud() {
             {open && <div className="text-[10px] text-sky-200/70">The boat holds still while you walk. WASD walk · mouse look · Shift run · V cruise</div>}
           </div>
         ) : open && <div className="text-[10px] text-sky-200/75">At the wheel: W S throttle · A D steer · drag to look. B stands you up — the engine drops to idle.</div>}
-        <div className="flex justify-between items-center border-t border-white/15 pt-1"><span>Hold: {holdN} fish · ${Math.round(s.holdValue)}</span><Btn on={() => world().sell()}>Sell (H)</Btn></div>
+        <div className="flex justify-between items-center border-t border-white/15 pt-1"><span data-testid="hold">Hold: {holdN} fish · {fmtCash(s.holdValue)}</span><Btn on={() => world().sell()}>Sell (H)</Btn></div>
         {s.streak > 0 && <div className="text-[10px] text-amber-200">perfect streak ×{s.streak}</div>}
       </div>
       {co && !s.game && !small && (

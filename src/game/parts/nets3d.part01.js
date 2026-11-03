@@ -6,7 +6,7 @@
                straining.  Opening and landing can partially fail: ribs that did not spin up stay folded and leave holes.
    - WallNet : seine + gillnet.  Paid out from the stern point by point; every metre of net has its own age so the curtain sinks gradually,
                billows in the current, dips between floats, and a purse seine closes (ends join, purse line draws the bottom shut).
-   - TrawlRig: warps (sagging), otter boards, wings, throat and codend that fills.  Mouth spreads with tow speed, depth follows warp/speed/weight. */
+   - TrawlRig lives in trawlrig.js (catenary warps, otter boards, wings, codend). */
 import * as THREE from 'three';
 import { clamp, lerp, sstep, TAU, seaEnv } from './config.js';
 import { meshDrag } from './netgen.js';
@@ -29,7 +29,7 @@ export function polarMesh(K, M, cell, R, color, tw = .02) {
 }
 
 /* a rope = instanced cylinders laid along a polyline (so it has real thickness, unlike GL lines) */
-class Rope {
+export class Rope {
   constructor(max, radius, color) {
     this.m = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 6, 1, true), litMaterial(color, 1, .15), max);
     this.m.frustumCulled = false; this.m.renderOrder = .6; this.m.count = 0; this.max = max; this.r = radius; this.d = new THREE.Object3D(); this.up = new THREE.Vector3(0, 1, 0); this.v = new THREE.Vector3();
@@ -51,8 +51,8 @@ class Rope {
     this.m.count = c; this.m.instanceMatrix.needsUpdate = true;
   }
 }
-const ball = (n, r, color, sy = 1, kind = 3) => { const m = new THREE.InstancedMesh(new THREE.SphereGeometry(r, 10, 8), litMaterial(color, kind, .6), n); m.frustumCulled = false; m.renderOrder = .62; m.count = 0; m.userData.sy = sy; return m; };
-const disposeGroup = (S, group) => { S.scene.remove(group); group.traverse((o) => { o.geometry && o.geometry.dispose(); o.material && o.material.dispose && o.material.dispose(); }); };
+export const ball = (n, r, color, sy = 1, kind = 3) => { const m = new THREE.InstancedMesh(new THREE.SphereGeometry(r, 10, 8), litMaterial(color, kind, .6), n); m.frustumCulled = false; m.renderOrder = .62; m.count = 0; m.userData.sy = sy; return m; };
+export const disposeGroup = (S, group) => { S.scene.remove(group); group.traverse((o) => { o.geometry && o.geometry.dispose(); o.material && o.material.dispose && o.material.dispose(); }); };
 
 /* ============================================================ CAST NET ============================================================ */
 export class CastNet {
@@ -247,25 +247,3 @@ export class Buoy {
    Otter trawl: two warps pay out from the stern to steel otter boards that kite the wings apart, wings + square + belly + codend of knotted mesh with
    lengthwise strengthening ropes and codend rings, head rope with floats, foot rope with lead.  Depth is set with the winch (this.tgt, metres): the warp pays out or
    hauls in to hold it.  Caught fish are shown swimming into the codend and stay visible inside the bag. */
-export class TrawlRig {
-  constructor(S, net, meshIdx, comp) {
-    this.S = S; this.net = net; this.mi = meshIdx; this.comp = comp; this.hist = []; this.warp = 30; this.deploy = 0; this.depth = 0; this.bag = []; this.snag = 0; this.K = 8; this.M = 16; this.opening = 0; this.spread = 0; this.t = 0; this.vDepth = 0;
-    this.tgt = 5; this.auto = false; this.hauling = false; this.hauled = false; this.dead = false; this.cod = { x: 0, y: -5, z: 0 }; this.seabed = 14; this.NB = 64;
-    const N = (this.K + 1) * this.M, g = new THREE.BufferGeometry(); this.pos = new Float32Array(N * 3); const uv = new Float32Array(N * 2), idx = [];
-    for (let r = 0; r <= this.K; r++) for (let i = 0; i < this.M; i++) { uv[(r * this.M + i) * 2] = i / this.M * Math.max(10, net.mouthW * 1.5); uv[(r * this.M + i) * 2 + 1] = r * 1.5; }
-    for (let r = 0; r < this.K; r++) for (let i = 0; i < this.M; i++) { const a = r * this.M + i, b = r * this.M + (i + 1) % this.M, c = a + this.M, d = b + this.M; idx.push(a, c, b, b, c, d); }
-    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3)); g.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); g.setIndex(idx);
-    this.mesh = new THREE.Mesh(g, netMaterial(net.material.color, .11)); this.mesh.frustumCulled = false; this.mesh.renderOrder = .55;
-    this.rope = { warpL: new Rope(16, .035, 0xcbbf9f), warpR: new Rope(16, .035, 0xcbbf9f), head: new Rope(20, .035, 0xf0c98a), foot: new Rope(20, .045, 0x4b4e54), brL: new Rope(2, .022, 0xcbbf9f), brR: new Rope(2, .022, 0xcbbf9f) };
-    this.lines = [0, 1, 2, 3].map(() => new Rope(this.K, .026, 0xd9b36b)); this.rings = [0, 1, 2].map(() => new Rope(this.M, .03, 0x8a6d3b));
-    this.lineBuf = new Float32Array((this.K + 1) * 3); this.ringBuf = new Float32Array(this.M * 3);
-    this.nfl = Math.min(40, net.floats); this.fl = ball(this.nfl, .17, net.floatColor, 1, 3); this.nsk = Math.min(40, net.sinkers); this.sk = ball(this.nsk, .13, 0x6b7078, 1, 4);
-    this.doors = [0, 1].map(() => { const b = new THREE.Mesh(new THREE.BoxGeometry(.1, 1.1, 1.5), litMaterial(0x7a8590, 2, .5)); b.renderOrder = .6; b.frustumCulled = false; return b; });
-    // fish inside the codend
-    const fg = fishGeometry(), NB = this.NB; this.bAC = new THREE.InstancedBufferAttribute(new Float32Array(NB * 3), 3); this.bAB = new THREE.InstancedBufferAttribute(new Float32Array(NB * 3), 3); this.bAF = new THREE.InstancedBufferAttribute(new Float32Array(NB * 4), 4);
-    fg.setAttribute('aCol', this.bAC); fg.setAttribute('aBel', this.bAB); fg.setAttribute('aFx', this.bAF);
-    this.bagMesh = new THREE.InstancedMesh(fg, fishMaterial(), NB); this.bagMesh.frustumCulled = false; this.bagMesh.renderOrder = .5; this.bagMesh.count = 0; this.bagFilled = 0;
-    this.group = new THREE.Group(); this.group.add(this.mesh, this.fl, this.sk, this.bagMesh, ...Object.values(this.rope).map((r) => r.m), ...this.lines.map((r) => r.m), ...this.rings.map((r) => r.m), ...this.doors); S.scene.add(this.group); this.dummy = new THREE.Object3D(); this.m = { x: 0, y: 0, z: 0, tx: 0, tz: -1 };
-    this.buf = new Float32Array(30 * 3); this.ringC = []; this.ringR = []; for (let r = 0; r <= this.K; r++) { this.ringC.push([0, 0, 0]); this.ringR.push(1); } this.tn = { nx: 1, nz: 0, tx: 0, tz: 1 };
-  }
-  trail(dist) { // point 'dist' metres back along the boat's track

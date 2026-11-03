@@ -1,71 +1,10 @@
 // @ts-nocheck
-/* TRAWL  — "Haul the Bag": the 3D tow decided what is in the bag; this is the haul-back. Hold SPACE to wind the winch, keep the warp tension in the green band,
-   ease off on wave surges and rock snags, and bring the bag up before time runs out. Too much tension bursts fish out of the codend; too little lets the bag sag and spill.
+/* (TRAWL "Haul the Bag" lives in TrawlGame.tsx)
    PURSE SEINE — "Pursing Rhythm": a two-lane rhythm game; every on-beat pull tightens the purse line and closes the leak gap under the ring.
    GILL   — "Pick the Net": a sorting conveyor; fish are tangled in the mesh and must be freed (several clicks) and sorted keep / release before the drum swallows them. */
 import { SPECIES, clamp } from '../game/config.js';
 import { retention } from '../game/netgen.js';
 import { Frame, GameCanvas, W, H, R, drawFish, sea, bar, keepRoll, tally, hex } from './common';
-
-/* ============================================================ TRAWL: HAUL THE BAG ============================================================ */
-function trawlFactory(cfg: any) {
-  const net = cfg.net, comp = cfg.comp, env = cfg.env, Dm = Math.min(13.5, cfg.seabed - .5), top = 40, ppm = (H - 130) / Dm, N = cfg.pool.length;
-  const bagFish = cfg.pool.map((p: any, i: number) => ({ i, p, sp: SPECIES[p.sp], keep: keepRoll(p, cfg), lost: false, ph: R() * 7, ox: R(), oy: R(), vx: 0, vy: 0, out: 0 }));
-  const potential = bagFish.filter((f: any) => f.keep).length, load = clamp(N / (120 + net.mouthW * 14), 0, 1);
-  const startDepth = clamp(cfg.depth || 3, 1, Dm), haulRate = .1 / (1 + load * .7 + comp.strain * .6) * (1 - .1 * env.seaDiff);   // fraction of the way up per second at full haul
-  const G: any = { t: 0, pos: 0, T: .15, hold: false, inBand: 0, over: 0, slack: 0, lost: 0, surge: 0, snag: 0, nextSnag: 6 + R() * 5, snags: 0, fx: [], result: null, limit: 46, started: false };
-  const base = () => .14 + .3 * load + .22 * comp.strain;
-  const finish = (why: string) => {
-    const keptList = bagFish.filter((f: any) => !f.lost && f.keep), idx = keptList.map((f: any) => f.i), score = potential ? clamp(idx.length / potential, 0, 1) : 0;
-    const band = G.inBand / Math.max(G.t, 1), perfect = potential >= 3 && score >= .9 && band > .55;
-    G.result = { caught: tally(cfg, idx), caughtIdx: idx, score, perfect, potential, delay: 900, headline: !N ? 'Empty bag' : why === 'time' ? 'Hauled too slowly' : perfect ? 'PERFECT HAUL' : 'Bag on deck',
-      tip: !N ? 'The trawl came up empty. Tow slowly at 2–4 knots through a dark patch or boiling water, with the warp length matched to the school depth (Q longer = deeper, E shorter = shallower).' : why === 'time' ? 'You ran out of time with fish still in the water. Keep SPACE held while the tension is in the green.' : G.lost > N * .3 ? 'The codend burst open whenever tension hit the red. Ease off on surges and on snags.' : band < .4 ? 'Stay in the green band — lots of time in slack or red costs fish.' : 'Smooth haul.' };
-  };
-  G.update = (dt: number) => {
-    if (G.result) return; G.t += dt; G.surge = Math.sin(G.t * 1.9 + 1) * (.07 + .1 * env.seaDiff) + Math.sin(G.t * .8) * .04;
-    G.nextSnag -= dt; if (G.nextSnag <= 0 && G.pos < .85 && cfg.depth > Dm - 4) { G.snag = .9; G.snags++; G.nextSnag = 9 + R() * 6; G.fx.push({ t: 0, s: 'snag!' }); } else if (G.nextSnag <= 0) G.nextSnag = 8 + R() * 6;
-    G.snag = Math.max(0, G.snag - dt);
-    const tgt = base() + (G.hold ? .36 + .12 * comp.strain : 0) + G.surge + (G.snag > 0 ? .4 : 0);
-    G.T += (tgt - G.T) * Math.min(1, dt * 3.2); G.T = clamp(G.T, 0, 1.1);
-    if (G.hold && G.T < 1) G.pos = Math.min(1, G.pos + haulRate * dt * (G.T > .75 ? .5 : 1) * (G.snag > 0 ? .3 : 1));
-    if (G.T >= .3 && G.T <= .72) G.inBand += dt;
-    // tension in the red bursts fish out of the codend; slack lets the bag sag and spill a few
-    const risk = G.T > .86 ? (G.T - .86) * 7 + .25 : G.T < .1 && G.pos > .05 ? .12 : 0; G.over = risk;
-    for (const f of bagFish) { if (f.lost) { f.out += dt; continue; } if (R() < risk * dt * .22 / Math.max(1, N / 14)) { f.lost = true; G.lost++; G.fx.push({ t: 0, s: '−fish' }); } }
-    if (G.pos >= 1) finish('done'); else if (G.t > G.limit) finish('time');
-  };
-  G.key = (e: KeyboardEvent, d: boolean) => { if (e.code === 'Space' || e.code === 'KeyG' || e.code === 'KeyF') G.hold = d; };
-  G.pointer = (t: string) => { if (t === 'down') G.hold = true; if (t === 'up') G.hold = false; };
-  G.draw = (c: CanvasRenderingContext2D) => {
-    sea(c, G.t, Dm, top, H - 60, ppm); const x0 = 250, bagY = top + 3 + (startDepth * (1 - G.pos)) * ppm + 10;
-    c.fillStyle = '#5b4a35'; c.fillRect(0, top - 34, 160, 34); c.fillStyle = '#c9b690'; c.fillRect(0, top - 40, 150, 8);   // boat stern
-    c.strokeStyle = '#d6c8a0'; c.lineWidth = 3; c.beginPath(); c.moveTo(140, top - 24); c.lineTo(x0, bagY - 36); c.stroke();
-    // net body + codend (bag)
-    const bw = 44 + 40 * load; c.fillStyle = 'rgba(235,235,215,.18)'; c.strokeStyle = 'rgba(240,235,210,.85)'; c.lineWidth = 1.6; c.beginPath(); c.moveTo(x0 - 14, bagY - 36); c.lineTo(x0 - bw / 2, bagY - 6); c.quadraticCurveTo(x0 - bw / 2 - 6, bagY + 36 + load * 20, x0, bagY + 44 + load * 24); c.quadraticCurveTo(x0 + bw / 2 + 6, bagY + 36 + load * 20, x0 + bw / 2, bagY - 6); c.lineTo(x0 + 14, bagY - 36); c.closePath(); c.fill(); c.stroke();
-    c.save(); c.clip(); c.strokeStyle = 'rgba(240,235,210,.3)'; for (let x = x0 - 80; x < x0 + 80; x += 12) { c.beginPath(); c.moveTo(x, bagY - 40); c.lineTo(x + 40, bagY + 90); c.moveTo(x, bagY - 40); c.lineTo(x - 40, bagY + 90); c.stroke(); } c.restore();
-    for (const f of bagFish) { if (f.lost) { const k = Math.min(1, f.out / 1.6); drawFish(c, x0 + (f.ox - .5) * bw + k * 120 * (f.ox < .5 ? -1 : 1), bagY + 8 + f.oy * 26 + k * 70, 14, f.sp, (f.ox < .5 ? Math.PI : 0) + .6, G.t * 8, 1 - k); } else drawFish(c, x0 + (f.ox - .5) * bw * .8, bagY + 6 + f.oy * (28 + load * 22), Math.max(10, f.sp.len * 30), f.sp, f.ox * 6, G.t * 6 + f.ph, f.keep ? 1 : .6); }
-    // panel
-    c.fillStyle = 'rgba(8,20,32,.78)'; c.beginPath(); c.roundRect(470, 44, 310, 372, 16); c.fill();
-    c.fillStyle = '#fff'; c.font = '600 14px system-ui'; c.fillText('WINCH', 490, 72); c.font = '12px system-ui'; c.fillStyle = '#bfe3f0';
-    c.fillText(G.hold ? 'hauling…' : 'HOLD SPACE (or press the mouse button) to haul', 490, 92);
-    // tension gauge (vertical)
-    const gx = 500, gy = 110, gh = 270, gw = 36; c.fillStyle = 'rgba(0,0,0,.5)'; c.fillRect(gx, gy, gw, gh);
-    const yT = (v: number) => gy + gh - gh * clamp(v / 1.1, 0, 1); c.fillStyle = 'rgba(255,90,70,.45)'; c.fillRect(gx, yT(1.1), gw, yT(.86) - yT(1.1)); c.fillStyle = 'rgba(110,230,150,.55)'; c.fillRect(gx, yT(.72), gw, yT(.3) - yT(.72)); c.fillStyle = 'rgba(255,200,90,.3)'; c.fillRect(gx, yT(.1), gw, yT(0) - yT(.1));
-    c.fillStyle = '#fff'; c.fillRect(gx - 6, yT(G.T) - 2, gw + 12, 4); c.font = '11px ui-monospace,monospace'; c.fillText('tension', gx - 6, gy - 6); c.fillStyle = '#9ff0b8'; c.fillText('keep here', gx + gw + 8, (yT(.3) + yT(.72)) / 2 + 4); c.fillStyle = '#ff9a8a'; c.fillText('bursts fish', gx + gw + 8, yT(.98)); c.fillStyle = '#ffd890'; c.fillText('slack: spills', gx + gw + 8, yT(.04));
-    bar(c, 640, 112, 120, 14, G.pos, '#7be0a8', 'bag up'); bar(c, 640, 136, 120, 14, G.t / G.limit, '#8fd0ff', 'time');
-    c.fillStyle = '#fff'; c.font = '12px ui-monospace,monospace'; c.fillText(`fish aboard: ${bagFish.filter((f: any) => !f.lost).length}/${N}`, 640, 180); c.fillText(`lost: ${G.lost}`, 640, 198);
-    c.fillStyle = '#bfe3f0'; c.fillText(`depth ${(startDepth * (1 - G.pos)).toFixed(1)} m`, 640, 222); c.fillText(`${comp.label}`, 640, 240);
-    c.fillStyle = G.over > 0 ? '#ff7a6a' : G.T < .3 ? '#ffd890' : '#9ff0b8'; c.font = '600 13px system-ui'; c.fillText(G.snag > 0 ? 'SNAG — let go!' : G.T > .86 ? 'TOO TIGHT — ease off' : G.T < .3 ? (G.hold ? 'easy…' : 'pull!') : 'good tension', 640, 290);
-    for (const e of G.fx) { e.t += .016; c.fillStyle = `rgba(255,170,120,${1 - e.t})`; c.font = '600 14px system-ui'; c.fillText(e.s, x0 + 40, bagY - 30 - e.t * 40); } G.fx = G.fx.filter((e: any) => e.t < 1);
-    c.fillStyle = 'rgba(8,20,32,.7)'; c.fillRect(0, 0, W, 28); c.fillStyle = '#fff'; c.font = '600 13px system-ui'; c.fillText(`Haul the bag — ${N} fish in the codend (~$${Math.round(bagFish.filter((f: any) => !f.lost).reduce((s: number, f: any) => s + f.sp.value, 0))})`, 12, 19);
-    if (G.result) { c.fillStyle = 'rgba(5,14,24,.55)'; c.fillRect(0, 0, W, H); c.fillStyle = G.result.perfect ? '#ffe28a' : '#fff'; c.font = '700 32px system-ui'; c.textAlign = 'center'; c.fillText(G.result.headline, W / 2, H / 2); c.textAlign = 'left'; }
-  };
-  return G;
-}
-export function TrawlGame({ cfg, onDone }: any) {
-  return (<Frame title="Trawl — Haul the Bag" cfg={cfg} tagline="The tow is over and the bag is full of whatever the net swept up. Wind it in without bursting the codend." keysHint="Hold Space / mouse button to haul · release on surges · stay in the green band">
-    <GameCanvas cfg={cfg} factory={trawlFactory} onDone={onDone} help={{ title: 'Trawl — haul back the bag', goal: 'Bring the bag to the surface before time runs out and lose as few fish as possible.', steps: ['The fish already in the codend came from your 3D tow (right depth + speed = more fish).', 'HOLD SPACE (or the mouse button) to wind the winch. Hauling raises the warp tension; releasing lets it fall.', 'Keep the white marker in the GREEN band. In the red the codend bursts and fish escape; with slack the bag sags and spills.', 'Waves surge the load and rocks can snag a low net: release the moment the tension nears red or a SNAG appears.', 'Bigger nets on a weak boat haul slower and strain more.'], tip: 'Tap-hold in short pulses — hold while tension is falling, let go as it climbs.' }} /></Frame>);
-}
 
 /* ============================================================ PURSE SEINE ============================================================ */
 function seineFactory(cfg: any) {
