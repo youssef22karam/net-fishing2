@@ -16,7 +16,7 @@ function seineFactory(cfg: any) {
   const win = () => (G.fast ? .11 : .17) * (.8 + .2 * comp.openMul) * (1 - .25 * env.seaDiff);
   const finish = () => {
     const kept = fish.filter((f: any) => !f.leaked && f.keep), idx = kept.map((f: any) => f.i), leak = potential ? fish.filter((f: any) => f.leaked && f.keep).length / potential : 0, acc = (G.hits + G.miss) ? G.hits / (G.hits + G.miss) : 0, score = potential ? clamp(idx.length / potential, 0, 1) : 0, perfect = potential >= 3 && acc >= .82 && leak <= .1;
-    G.result = { caught: tally(cfg, idx), caughtIdx: idx, score, perfect, headline: perfect ? 'PERFECT PURSE' : 'Purse closed', delay: 900, tip: !cfg.pool.length ? 'The ring closed around empty water. Circle tighter around the dark patch while the gulls are diving.' : leak > .3 ? 'Too many fish slipped through the gap. Close the ring fully before pursing, and hit the beats cleanly.' : acc < .6 ? 'Missed beats let the purse line go slack. Try the steady tempo (Space) for wider timing windows.' : 'Nice rhythm — the purse line came in smooth.' };
+    G.result = { caught: tally(cfg, idx), caughtIdx: idx, score, perfect, headline: perfect ? 'PERFECT PURSE' : 'Purse closed', delay: 900, tip: !cfg.pool.length ? 'The ring closed around empty water. Circle tighter around the rippling water while the gulls are diving.' : leak > .3 ? 'Too many fish slipped through the gap. Close the ring fully before pursing, and hit the beats cleanly.' : acc < .6 ? 'Missed beats let the purse line go slack. Try the steady tempo (Space) for wider timing windows.' : 'Nice rhythm — the purse line came in smooth.' };
   };
   G.update = (dt: number) => {
     if (G.result) return; G.t += dt; G.next -= dt; const dtBeat = G.fast ? .5 : .82;
