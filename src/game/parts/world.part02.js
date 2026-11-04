@@ -200,7 +200,7 @@
     const st = store.get(), m = st.method; let steps = [], at = 0;
     if (this.gameActive) { store.set({ coach: { steps: ['Play the catch game on screen'], at: 0, method: m } }); return; }
     if (m === 'cast') {
-      steps = ['Approach a shallow school (circling gulls, rippling water) at < 5 kn so it stays calm, then press B to stand up', 'Walk onto the deck (WASD) and line up the water target ring over the fish', 'Hold F, release in the GREEN to throw the net cleanly over the school', 'Watch the net open, land and sink — the cut-away opens', 'Hold SPACE in the cut-away to pull the cord when fish are inside the bell', 'Sell the catch (H)'];
+      steps = ['Approach a shallow school (circling gulls, dark patch) at < 5 kn so it stays calm, then press B to stand up', 'Walk onto the deck (WASD) and line up the water target ring over the fish', 'Hold F, release in the GREEN to throw the net cleanly over the school', 'Watch the net open, land and sink — the cut-away opens', 'Hold SPACE in the cut-away to pull the cord when fish are inside the bell', 'Sell the catch (H)'];
       at = !this.walking ? 0 : this.cast ? (this.cast.hauling ? 5 : this.cast.settled ? 4 : 3) : st.holdValue > 0 && st.result ? 5 : this.charging ? 2 : 1;
     } else if (m === 'trawl') {
       steps = ['Drive at 2–4 knots from the wheel (W) and head for a school', 'Press F to shoot the trawl — it takes ~16 s to open and sink', 'Match the trawl depth to the fish on the fish finder (Q / E or the depth buttons; X follows the school). Faster tow = wider mouth', 'Feel the warps: "heavy" means fish are in the bag. Press G to haul back', 'Play the haul game, then sell (H)'];

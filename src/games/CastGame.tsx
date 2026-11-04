@@ -21,7 +21,7 @@ function factory(cfg: any) {
     const idx = kept.map((f: any) => f.i), outN = fish.filter((f: any) => f.out).length, slipN = fish.filter((f: any) => f.slip && f.y < 7).length, deepN = fish.filter((f: any) => f.p.depth > 8).length, shed = fish.filter((f: any) => f.shed).length;
     const score = potential ? clamp(idx.length / potential, 0, 1) : 0, perfect = potential >= 3 && score >= .8 && !auto;
     let tip = '';
-    if (!cfg.pool.length) tip = cfg.label === 'miss' ? 'The net landed beside the school. Creep closer and aim at the rippling water — range is only a few metres.' : 'Nothing was under the net.';
+    if (!cfg.pool.length) tip = cfg.label === 'miss' ? 'The net landed beside the school. Creep closer and aim at the dark patch — range is only a few metres.' : 'Nothing was under the net.';
     else if (!idx.length && deepN > cfg.pool.length * .5) tip = 'The school was too deep — it slid away under the rim. Cast nets only reach shallow fish; look for gulls diving and a dark patch near the surface.';
     else if (outN > idx.length) tip = 'The fish dived faster than the net sank. Cinch earlier, or use a heavier net so the rim wins the race.';
     else if (slipN > idx.length && slipN > 3) tip = `Small fish slipped through the ${mesh} mm mesh — try a finer mesh (T), but expect it to sink slower.`;

@@ -2,11 +2,10 @@
 /* Fish: schools that move like real bait balls (rotating mill, amoeba shaped envelope, breathing, silver flash waves, vacuoles around the boat),
    lone stragglers for the trawl to pick up one by one, natural visual cues only.
    Rendering (no dots, no billboards, no markers): near the camera every fish is a real body at true size, shaded by the shared underwater model and cut off below ~8 m;
-   a SHALLOW school (top within ~6 m) is shown by its real fish, a churning underwater density layer and many tiny fish-caused surface cells (schoolfx.js) - never a painted patch; deeper schools show nothing (fish finder only). */
+   a SHALLOW school (top within ~6 m) also paints one dark patch under the surface + ripples + silver flashes; deeper schools show nothing (fish finder only). */
 import * as THREE from 'three';
 import { SPECIES, SPECIES_LIST, clamp, lerp, sstep, TAU, seaEnv } from './config.js';
-import { fishGeometry, fishMaterial } from './underwater.js';
-import { SchoolFX } from './schoolfx.js';
+import { fishGeometry, fishMaterial, surfacePatchMaterial, patchGeometry, glintMaterial, billboards } from './underwater.js';
 
 const R = Math.random, rt = (a, b) => a + (b - a) * R();
 const MAXF = window.__lite ? 950 : 1850;
@@ -25,8 +24,11 @@ export class FishWorld {
     g.setAttribute('aCol', this.aCol); g.setAttribute('aBel', this.aBel); g.setAttribute('aFx', this.aFx);
     this.mesh = new THREE.InstancedMesh(g, fishMaterial(), MAXF); this.mesh.frustumCulled = false; this.mesh.renderOrder = .45; this.mesh.count = 0; S.scene.add(this.mesh);
     this.spCol = {}; for (const sp of SPECIES_LIST) this.spCol[sp.id] = { c: new THREE.Color(sp.color), b: new THREE.Color(sp.belly), st: sp.id === 'mackerel' ? 1 : 0 };
-    // underwater density + surface disturbance + flank glints, all driven by the live fish (see schoolfx.js)
-    this.fx = new SchoolFX(S, this);
+    // surface patch of a shallow school: ONE soft dark decal per school just under the sea surface (alpha from depth / distance / clarity / light / sea state)
+    this.PMAX = 48; this.patch = new THREE.Mesh(patchGeometry(this.PMAX), surfacePatchMaterial()); this.patch.frustumCulled = false; this.patch.renderOrder = .38; S.scene.add(this.patch);
+    // silver glints (additive)
+    this.gPos = new Float32Array(MAXF * 3); this.gA = new Float32Array(MAXF); this.gS = new Float32Array(MAXF);
+    this.glint = billboards(glintMaterial(), this.gPos, this.gA, this.gS); this.glint.renderOrder = .8; S.scene.add(this.glint);
     // leaping bait: small real fish bodies on a ballistic arc (short-lived, only from shallow active schools)
     const NJ = 60; this.NJ = NJ; this.jn = 0; this.jp = new Float32Array(NJ * 3); this.jv = new Float32Array(NJ * 3); this.jl = new Float32Array(NJ).fill(-1); this.jsp = new Array(NJ).fill(null);
     const jg = fishGeometry(); this.jAC = new THREE.InstancedBufferAttribute(new Float32Array(NJ * 3), 3); this.jAB = new THREE.InstancedBufferAttribute(new Float32Array(NJ * 3), 3); this.jAF = new THREE.InstancedBufferAttribute(new Float32Array(NJ * 4), 4);
@@ -313,7 +315,7 @@ export class FishWorld {
       }
     }
     if (lones < STRAGGLERS && this.frame % 20 === 0) this.spawnStraggler(boat, false);
-    this.updateInstances(cam, env, dt);
+    this.updateInstances(cam, env);
     this.updateJumpers(dt);
   }
   respawn(boat, forceShallow = false) {
@@ -343,26 +345,18 @@ export class FishWorld {
     }
     this.jumpers.instanceMatrix.needsUpdate = true; this.jAC.needsUpdate = this.jAB.needsUpdate = this.jAF.needsUpdate = true;
   }
-  updateInstances(cam, env, dt) {
-    const m = this.mesh, d = this.dummy, low = this.fx.isLow(); let i = 0;
-    const AC = this.aCol.array, AB = this.aBel.array, AF = this.aFx.array, RANGE = 150;
-    for (const s of this.schools) {
-      const sc0 = this.spCol[s.sp.id]; let k = -1;
-      for (const f of s.fish) {
-        k++; if (i >= MAXF) break;
-        const dx = f.x - cam.x, dz = f.z - cam.z, dd = Math.hypot(dx, dz), dep = -f.y;
-        if (dd >= RANGE) continue;
-        // Low: thin the instanced fish by depth and distance (never the sim, never the internal motion): shallow + near fish stay 1:1
-        let st = 1; if (low) st = dep > 4 ? 3 : dep > 2.6 ? 2 : dd > 90 ? 3 : dd > 45 ? 2 : 1;
-        if (st > 1 && ((k + (s.seed | 0)) % st)) continue;
-        const L = f.sp.len * f.lenK * (1 + .13 * (st - 1)), wd = L * (f.sp.girth / .17);
-        d.position.set(f.x, f.y, f.z); d.rotation.set(-clamp(f.vy * .25, -.5, .5), f.hd, f.roll + f.rollK * 1.1 + Math.sin(this.t * 3 + f.ph) * .04, 'YXZ');
-        d.scale.set(wd, wd * 1.05, L); d.updateMatrix(); m.setMatrixAt(i, d.matrix);
-        const tn = f.tone; AC[i * 3] = sc0.c.r * tn; AC[i * 3 + 1] = sc0.c.g * tn; AC[i * 3 + 2] = sc0.c.b * tn; AB[i * 3] = sc0.b.r; AB[i * 3 + 1] = sc0.b.g; AB[i * 3 + 2] = sc0.b.b;
-        AF[i * 4] = f.flash; AF[i * 4 + 1] = f.ph; AF[i * 4 + 2] = f.sw; AF[i * 4 + 3] = sc0.st; i++;
-      }
-    }
-    m.count = i; this.count = i; m.instanceMatrix.needsUpdate = true; this.aCol.needsUpdate = this.aBel.needsUpdate = this.aFx.needsUpdate = true;
-    this.fx.update(dt, cam, env);
+  /* readability of a school from the surface: depth of its top x distance x clarity x light x sea state x viewing angle x sun glare (all continuous) */
+  cue(s, cam, env) {
+    const dk = this.depthCue(s); if (dk <= .001) return { k: 0, a: 0 };
+    const dist = Math.hypot(s.x - cam.x, s.z - cam.z), camH = Math.max(cam.y - this.S.S.y, .5), sinE = camH / Math.hypot(dist, camH);
+    const ang = .28 + .72 * sstep(.03, .3, sinE), clar = lerp(.5, 1, env.clar), atmos = Math.exp(-dist * (.0032 + .011 * env.storm)) * (1 - sstep(260, 380, dist));
+    const light = .14 + .86 * env.light, sea = 1 / (1 + .22 * Math.pow(env.hs, 1.4)), su = this.S.U.uSun.value, sl = Math.hypot(su.x, su.z) + 1e-4, dd = dist + 1e-3;
+    const dot = Math.max(0, ((s.x - cam.x) / dd) * (su.x / sl) + ((s.z - cam.z) / dd) * (su.z / sl)), glare = clamp((Math.pow(dot, 6) * (1 - env.sunY) * .6 + Math.pow(dot, 40) * .3) * env.day, 0, .7);
+    const k = dk * clar * atmos * light * sea * ang * (1 - glare), dens = 1 - Math.exp(-(s.live || s.fish.length) / 38);
+    return { k, a: clamp(k * (.25 + .9 * dens) * 1.25, 0, .9) };
   }
-}
+  updateInstances(cam, env) {
+    const m = this.mesh, d = this.dummy; let i = 0, gi = 0, pi = 0;
+    const gp = this.gPos, ga = this.gA, gs = this.gS, AC = this.aCol.array, AB = this.aBel.array, AF = this.aFx.array;
+    const PG = this.patch.geometry, pPos = PG.attributes.aPos.array, pP = PG.attributes.aP.array, pS = PG.attributes.aSeed.array; this.patch.material.uniforms.uT.value = this.t;
+    for (const s of this.schools) {
