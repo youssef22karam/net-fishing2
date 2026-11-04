@@ -11,11 +11,11 @@ import { Frame, GameCanvas, W, H, R, drawFish, sea, bar, keepRoll, tally, hex } 
 function factory(cfg: any) {
   const net = cfg.net, mesh = net.mesh[cfg.meshIdx], Dm = Math.min(13.5, cfg.seabed - .5), top = 36, ppm = (H - 100) / Dm, Rpx = 235, cx = W / 2, Rm = net.radius, env = cfg.env;
   const rho0 = clamp(cfg.openFrac, .22, 1.05), sinkRate = net.sinkRate / meshDrag(mesh), holes = cfg.holes || 0, cur = env.current * (1 + env.seaDiff) * .6 / Rm;
-  const fish = cfg.pool.map((p: any, i: number) => { const sp = SPECIES[p.sp]; return { i, p, sp, x: p.x, y: p.depth, vx: (R() - .5) * .08, vy: 0, panic: sp.panic * (.7 + .8 * R()) / (1 + cfg.boatSpeed * .25 + cfg.noise * .8) * 4.4, state: 'idle', out: false, slip: keepRoll(p, cfg) ? 0 : 1, flash: 0, dead: false, shed: false, ph: R() * 7 }; });
+  const fish = cfg.pool.map((p: any, i: number) => { const sp = SPECIES[p.sp]; return { i, p, sp, x: p.x * .88, y: p.depth, vx: (R() - .5) * .06, vy: 0, panic: sp.panic * (.85 + .85 * R()) / (1 + cfg.boatSpeed * .15 + cfg.noise * .3) * 5.4, state: 'idle', out: false, slip: keepRoll(p, cfg) ? 0 : 1, flash: 0, dead: false, shed: false, ph: R() * 7 }; });
   const potential = fish.filter((f: any) => !f.slip && f.y <= 7).length;
-  const G: any = { t: 0, zr: .3, c: 0, tension: 0, holding: false, pulse: 0, pulses: [], fx: [], result: null, msg: '', msgT: 0 };
+  const G: any = { t: 0, zr: .35, c: 0, tension: 0, holding: false, pulse: 0, pulses: [], fx: [], result: null, msg: '', msgT: 0 };
   const rimY = () => G.zr * (1 - .12 * G.c), rho = () => rho0 * (1 - .93 * G.c), xs = (d: number) => rho() * Math.pow(clamp(d / Math.max(rimY(), .2), 0, 1), .62);
-  const inside = (f: any) => !f.out && !f.slip && f.y < rimY() && Math.abs(f.x) < xs(f.y) + .02;
+  const inside = (f: any) => !f.out && !f.slip && f.y < rimY() + .08 && Math.abs(f.x) < xs(f.y) + .05;
   const finish = (auto: boolean) => {
     const kept = fish.filter((f: any) => !f.out && !f.dead && !f.slip && (f.trapped || (f.y < rimY() + .3 && Math.abs(f.x) < rho() + .06)) && (!auto || R() < .55));
     const idx = kept.map((f: any) => f.i), outN = fish.filter((f: any) => f.out).length, slipN = fish.filter((f: any) => f.slip && f.y < 7).length, deepN = fish.filter((f: any) => f.p.depth > 8).length, shed = fish.filter((f: any) => f.shed).length;
@@ -38,11 +38,11 @@ function factory(cfg: any) {
     else { G.tension = Math.max(0, G.tension - .35 * dt); G.c = Math.max(0, G.c - .02 * dt); }
     G.pulses = G.pulses.filter((p: any) => (p.t += dt) < .6);
     for (const f of fish) {
-      if (f.dead) continue; if (G.c > .45 && !f.trapped && inside(f)) f.trapped = true; if (f.trapped) { if (G.tension >= .98 && R() < dt * .6 && f.sp.len > mesh * .0095 * 1.4) { f.shed = true; f.out = true; f.trapped = false; } else { f.x += (0 - f.x) * Math.min(1, dt * 2.5); f.y = Math.min(f.y, rimY() - .05); f.ph += dt * 8; continue; } } f.ph += dt * 8; f.flash = Math.max(0, f.flash - dt * 3); f.x += cur * dt;
-      for (const p of G.pulses) if (p.t < dt * 1.5) { const d = f.x - p.x; if (Math.abs(d) < .7 && f.y < 4) { f.vx += Math.sign(d || 1) * (1 - Math.abs(d) / .7) * .9; f.panic -= .25; f.flash = 1; } }
+      if (f.dead) continue; if (G.c > .36 && !f.trapped && inside(f)) f.trapped = true; if (f.trapped) { if (G.tension >= .98 && R() < dt * .6 && f.sp.len > mesh * .0095 * 1.4) { f.shed = true; f.out = true; f.trapped = false; } else { f.x += (0 - f.x) * Math.min(1, dt * 2.5); f.y = Math.min(f.y, rimY() - .05); f.ph += dt * 8; continue; } } f.ph += dt * 8; f.flash = Math.max(0, f.flash - dt * 3); f.x += cur * dt;
+      for (const p of G.pulses) if (p.t < dt * 1.5) { const d = f.x - p.x; if (Math.abs(d) < .7 && f.y < 4) { f.vx += Math.sign(d || 1) * (1 - Math.abs(d) / .7) * .9; f.panic -= .15; f.flash = 1; } }
       if (f.state === 'idle') { f.panic -= dt; f.x += f.vx * dt; if (f.panic <= 0) { f.state = 'flee'; f.flash = 1; } }
-      else { const dir = Math.sign(f.x || (R() - .5)) * (f.sp.flee === 'sprint' ? 1.6 : 1), zz = f.sp.flee === 'zigzag' ? Math.sin(f.ph * .5) * .5 : 0, tx = (dir * (.5 + f.sp.speed * .12) + zz) / (1 + Rm * .15), ty = f.sp.dive * (f.sp.flee === 'dive' ? .8 : .36);
-        f.vx += (tx - f.vx) * dt * 2.5; f.vy += (ty - f.vy) * dt * 2.5; f.x += f.vx * dt; f.y = Math.min(Dm, f.y + f.vy * dt); }
+      else { const dir = Math.sign(f.x || (R() - .5)) * (f.sp.flee === 'sprint' ? 1.35 : .85), zz = f.sp.flee === 'zigzag' ? Math.sin(f.ph * .5) * .4 : 0, tx = (dir * (.4 + f.sp.speed * .1) + zz) / (1 + Rm * .18), ty = f.sp.dive * (f.sp.flee === 'dive' ? .62 : .28);
+        f.vx += (tx - f.vx) * dt * 2.2; f.vy += (ty - f.vy) * dt * 2.2; f.x += f.vx * dt; f.y = Math.min(Dm, f.y + f.vy * dt); }
       // mesh behaviour
       if (!f.out && !f.slip) {
         const lim = xs(f.y); if (f.y < rimY()) { if (Math.abs(f.x) > lim + .02 && Math.abs(f.x) < rho0 * 1.3 + .3 && f.state === 'flee') { const was = Math.abs(f.x - f.vx * dt) <= lim + .03; if (was) { f.x = Math.sign(f.x) * lim; f.vx *= -.15; f.vy += .25; } } }

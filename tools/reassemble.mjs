@@ -5,6 +5,7 @@
 //   src/engine/parts/sea.part01.js    ... sea.part03.js    -> src/engine/sea.js
 //   src/game/parts/nets3d.part01.js   ... nets3d.part02.js -> src/game/nets3d.js
 //   src/game/parts/world.part01.js    ... world.part02.js  -> src/game/world.js
+//   src/game/parts/fish.part01.js     ... fish.part02.js   -> src/game/fish.js
 // The generated files are git-ignored. This runs automatically as part of
 // `npm run dev`, `npm run build` and `npm run preview` (see package.json).
 // Parts are concatenated byte-for-byte with nothing added between them, so
@@ -20,6 +21,7 @@ const TARGETS = [
   ["sea", "engine"],
   ["nets3d", "game"],
   ["world", "game"],
+  ["fish", "game"],
 ];
 
 for (const [name, dir] of TARGETS) {

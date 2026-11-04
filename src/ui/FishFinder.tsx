@@ -46,6 +46,16 @@ export function FishFinder({ small }: { small: boolean }) {
         p.strokeStyle = 'rgba(160,220,255,.22)'; p.lineWidth = 1; p.fillStyle = 'rgba(190,230,255,.5)'; p.font = '8px ui-monospace,monospace'; p.textAlign = 'left'; for (const r of [100, 200, 300]) { p.beginPath(); p.arc(bx, by, r * k, Math.PI * 1.08, Math.PI * 1.92); p.stroke(); p.fillText(String(r), bx + 2, by - r * k + 8); }
         p.beginPath(); p.moveTo(bx, by); p.lineTo(bx, 4); p.stroke();
         const SBc = w.sonar, nt = w.rig && !w.rig.dead ? w.rig : null; const h = w.boat.heading, fx = -Math.sin(h), fz = -Math.cos(h), rx = Math.cos(h), rz = -Math.sin(h);
+        const toPlan = (wx: number, wz: number) => { const dx = wx - w.boat.position.x, dz = wz - w.boat.position.z; return [bx + (dx * rx + dz * rz) * k, by - (dx * fx + dz * fz) * k]; };
+        if (w.gill && w.gill.length) {
+          p.strokeStyle = '#ffcc22'; p.lineWidth = 1.5;
+          for (const g of w.gill) { if (!g.pts.length) continue; p.beginPath(); g.pts.forEach((pt: any, idx: number) => { const [px, py] = toPlan(pt.x, pt.z); idx ? p.lineTo(px, py) : p.moveTo(px, py); }); p.stroke(); const [b0x, b0y] = toPlan(g.pts[0].x, g.pts[0].z); p.fillStyle = '#ffcc22'; p.fillRect(b0x - 2, b0y - 2, 4, 4); }
+        }
+        if (w.wall && w.wall.pts.length) {
+          p.strokeStyle = '#ff6a1a'; p.lineWidth = 1.5; p.beginPath();
+          w.wall.pts.forEach((pt: any, idx: number) => { const [px, py] = toPlan(pt.x, pt.z); idx ? p.lineTo(px, py) : p.moveTo(px, py); }); p.stroke();
+          const [b0x, b0y] = toPlan(w.wall.pts[0].x, w.wall.pts[0].z); p.fillStyle = '#ff6a1a'; p.beginPath(); p.arc(b0x, b0y, 2.5, 0, 7); p.fill();
+        }
         if (nt) { const dx = nt.m.x - w.boat.position.x, dz = nt.m.z - w.boat.position.z, ax = dx * fx + dz * fz, lt = dx * rx + dz * rz; p.strokeStyle = 'rgba(255,255,255,.6)'; p.beginPath(); p.moveTo(bx, by); p.lineTo(bx + lt * k, by - ax * k); p.stroke(); p.fillStyle = '#fff'; p.fillRect(bx + lt * k - 3, by - ax * k - 2, 6, 4); }
         (SBc.contacts || []).forEach((c: any, i: number) => { const x = bx + c.lat * k, y = by - c.ax * k; if (x < 2 || x > PW - 2 || y < 2 || y > PH - 2) return; const r = Math.max(3, Math.min(8, 2 + Math.sqrt(c.n) * .45)); p.globalAlpha = c.ahead ? 1 : .45; p.fillStyle = depthCol(c.mean); p.beginPath(); p.arc(x, y, r, 0, 7); p.fill(); p.strokeStyle = c.ahead && i < 3 ? COLS[i] : 'rgba(255,255,255,.4)'; p.lineWidth = 1.6; p.stroke(); p.globalAlpha = 1; if (c.ahead && i < 3) { p.fillStyle = '#04121f'; p.font = '700 8px ui-monospace,monospace'; p.textAlign = 'center'; p.fillText(String(i + 1), x, y + 3); } });
         p.fillStyle = '#fff'; p.beginPath(); p.moveTo(bx, by - 6); p.lineTo(bx - 4, by + 4); p.lineTo(bx + 4, by + 4); p.fill(); }

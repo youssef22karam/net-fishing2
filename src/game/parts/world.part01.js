@@ -1,7 +1,7 @@
 // @ts-nocheck
 /* The game controller: deck mode, auto-creep, camera assist, throws, nets in the world, scenario building for the 2D games, economy. */
 import * as THREE from 'three';
-import { SPECIES, BOATS, METHODS, clamp, sstep, TAU, seaEnv, lerp } from './config.js';
+import { SPECIES, SPECIES_LIST, BOATS, METHODS, clamp, sstep, TAU, seaEnv, lerp } from './config.js';
 import { genNet, compat, retention, estimatePool } from './netgen.js';
 import { FishWorld } from './fish.js';
 import { Gulls } from './gulls.js';
@@ -11,27 +11,54 @@ import { scanContacts } from './sonar.js';
 import { Walker, HELM } from './walk.js';
 import { store } from './store.js';
 
-
 const R = Math.random, V3 = THREE.Vector3;
 const CREEP = [.8, .55, .3, 0];            // power levels (m/s). Forward only; the player can only go down to a full stop.
 const wrap = (a) => ((a + Math.PI * 3) % TAU) - Math.PI;
 export const CAST_MAX_DEPTH = 6.5;           // cast nets only reach shallow schools
 
-/* --------------------------- tiny synthesized audio (warm feedback) --------------------------- */
-let AC = null, eng = null;
+/* --------------------------- tiny synthesized audio (warm feedback + ambient gull calls) --------------------------- */
+let AC = null, eng = null, lastCryT = 0;
 function audio() { if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); const o = AC.createOscillator(), g = AC.createGain(), f = AC.createBiquadFilter(); o.type = 'sawtooth'; o.frequency.value = 40; f.type = 'lowpass'; f.frequency.value = 160; g.gain.value = 0; o.connect(f); f.connect(g); g.connect(AC.destination); o.start(); eng = { o, g, f }; } catch (e) {} } return AC; }
 export function chime(kind = 'good') { const a = audio(); if (!a) return; const notes = kind === 'good' ? [523, 659, 784, 1046] : kind === 'perfect' ? [659, 784, 988, 1319, 1568] : kind === 'soft' ? [392, 330] : [440]; notes.forEach((f, i) => { const o = a.createOscillator(), g = a.createGain(); o.type = 'sine'; o.frequency.value = f; const t = a.currentTime + i * .09; g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(.07, t + .02); g.gain.exponentialRampToValueAtTime(.0001, t + .5); o.connect(g); g.connect(a.destination); o.start(t); o.stop(t + .55); }); }
 export function tick(kind) { const a = audio(); if (!a) return; const o = a.createOscillator(), g = a.createGain(); o.type = 'triangle'; o.frequency.value = kind === 'bad' ? 180 : 700 + Math.random() * 300; g.gain.setValueAtTime(.05, a.currentTime); g.gain.exponentialRampToValueAtTime(.0001, a.currentTime + .12); o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + .13); }
+export function gullCry(dist = 60) {
+  if (!AC || document.hidden) return;
+  const now = AC.currentTime; if (now - lastCryT < 3.4) return; lastCryT = now;
+  const vol = clamp(.038 / (1 + dist / 55), .004, .038);
+  const o = AC.createOscillator(), g = AC.createGain(), f = AC.createBiquadFilter();
+  o.type = 'triangle'; f.type = 'bandpass'; f.frequency.value = 2100; f.Q.value = 2.8;
+  const p0 = 1550 + Math.random() * 320;
+  o.frequency.setValueAtTime(p0, now);
+  o.frequency.linearRampToValueAtTime(p0 * 1.28, now + .09);
+  o.frequency.exponentialRampToValueAtTime(p0 * .74, now + .42);
+  g.gain.setValueAtTime(.0001, now);
+  g.gain.linearRampToValueAtTime(vol, now + .05);
+  g.gain.exponentialRampToValueAtTime(.0001, now + .44);
+  o.connect(f); f.connect(g); g.connect(AC.destination);
+  o.start(now); o.stop(now + .46);
+}
 
 export class World {
   constructor(S) {
-    this.S = S; this.boat = S.boat; this.fw = new FishWorld(S); this.fw.initialWorld(S.boat); this.gulls = new Gulls(S, this.fw);
+    this.S = S; this.boat = S.boat; this.fw = new FishWorld(S); this.fw.initialWorld(S.boat); this.gulls = new Gulls(S, this.fw, (d) => gullCry(d));
     this.t = 0; this.charging = false; this.chargeT = 0; this.cast = null; this.cd = 0; this.rig = null; this.wall = null; this.gill = []; this.seineState = 'idle'; this.dying = [];
     this.pointerLocked = false; this.lastNoise = 0; this.dragK = 1; this.walker = new Walker(); this.walking = false; this.keysDown = new Set(); this.auto = { power: 0, rudder: 0 };
     this.touch = { fwd: 0, strafe: 0, run: false }; this.sonar = { cols: [], ahead: null, contacts: [], net: null }; this.sonarT = 0; this.feed = []; this.trawlPending = false; this.nets = {}; this.refreshNets(true); this.gameActive = false; this.startAt = 0; this.coachT = 0;
+    this.initAimRing();
     S.onFrame = (dt) => this.tick(dt);
     S.onCam = (dt) => { if (this.rig && !this.rig.dead) this.rig.attach(); };   // after the boat has been moved / heaved / pitched: the warps are re-tied to the winch blocks every frame
     this.bindInput(); S.setMode(1); store.set({ started: true, camMode: 1, walking: false, auto: { ...this.auto } }); this.applyControls();
+  }
+  initAimRing() {
+    const g = new THREE.Group();
+    const outerGeo = new THREE.RingGeometry(.94, 1.0, 48); outerGeo.rotateX(-Math.PI / 2);
+    const innerGeo = new THREE.RingGeometry(.0, .92, 48); innerGeo.rotateX(-Math.PI / 2);
+    this.aimMatOut = new THREE.MeshBasicMaterial({ color: 0x5ee6c4, transparent: true, opacity: .65, side: THREE.DoubleSide, depthWrite: false });
+    this.aimMatIn = new THREE.MeshBasicMaterial({ color: 0x5ee6c4, transparent: true, opacity: .12, side: THREE.DoubleSide, depthWrite: false });
+    this.aimOut = new THREE.Mesh(outerGeo, this.aimMatOut); this.aimIn = new THREE.Mesh(innerGeo, this.aimMatIn);
+    this.aimOut.renderOrder = .85; this.aimIn.renderOrder = .84;
+    g.add(this.aimOut, this.aimIn); g.visible = false;
+    this.aimRing = g; this.S.scene.add(g);
   }
   get boatDef() { return BOATS[store.get().boatId]; }
   equipPrice(type, price) { const st = store.get(), n = genNet(type, price); const old = st.nets[type]; const cost = st.free ? 0 : n.price; if (cost > st.cash) return this.toast('Not enough cash for that net — switch on Free test mode or pick a cheaper price'); n.meshIdx = old ? Math.min(old.meshIdx, 2) : 1; store.set({ nets: { ...st.nets, [type]: n }, cash: st.cash - cost }); this.afterGear(); this.toast(`${n.name} equipped · ${n.sizeLabel} · ${n.weight.toFixed(1)} kg`); }
@@ -53,11 +80,11 @@ export class World {
   startWalk() {
     const S = this.S; this.walking = true; this.walker.reset(); S.DECK.yaw = 0; S.DECK.pitch = -.12; S.DECK.eye.set(this.walker.x, this.walker.eyeY, this.walker.z);
     this.keysDown.clear(); this.touch.fwd = this.touch.strafe = 0; this.S.setLever && this.S.setLever(0); this.auto.power = 0; this.auto.rudder = 0; this.applyControls();
-    store.set({ walking: true, help: false, auto: { ...this.auto } }); this.toast(this.boat.speed > .3 ? 'You left the wheel — engine to idle, the boat coasts to a stop. Walk to the wheel (B) to drive again' : 'You left the wheel. The boat stays put. WASD walks · mouse looks · B at the wheel to sit back down');
+    store.set({ walking: true, help: false, auto: { ...this.auto } }); this.toast(this.boat.speed > .3 ? 'You left the wheel — engine to idle, the boat coasts quietly. WASD walks · mouse aims · F throws' : 'On deck — WASD walks · mouse aims · F throws · B returns to the wheel');
   }
-  endWalk() { this.walking = false; this.charging = false; this.keysDown.clear(); this.touch.fwd = this.touch.strafe = 0; store.set({ walking: false, charge: null }); this.applyControls(); }
+  endWalk() { this.walking = false; this.charging = false; if (this.aimRing) this.aimRing.visible = false; this.keysDown.clear(); this.touch.fwd = this.touch.strafe = 0; store.set({ walking: false, charge: null }); this.applyControls(); }
   sitDown() {
-    if (!this.walker.nearHelm()) return this.toast('Walk back to the wheel (starboard side of the wheelhouse, behind the dash) and press B');
+    this.walker.reset();
     this.S.setLever && this.S.setLever(Math.max(0, this.boat.power)); this.S.setMode(1); this.syncMode(); this.toast('Back at the wheel — W S throttle · A D steer');
   }
   syncMode() { const m = this.S.getMode(); if (m === 6 && !this.walking) this.startWalk(); else if (m !== 6 && this.walking) this.endWalk(); else this.applyControls(); }
@@ -69,7 +96,7 @@ export class World {
   setAuto(dp, dr) {
     if (!this.walking) return; this.auto.power = clamp(this.auto.power + dp, 0, 8); this.auto.rudder = clamp(Math.round((this.auto.rudder + dr) * 4) / 4, -1, 1); this.applyControls(); store.set({ auto: { ...this.auto } });
   }
-  toggleCreep() { if (!this.walking) return this.toast('Stand up from the wheel first (B)'); this.auto.power = this.auto.power > 0 ? 0 : 1.2; this.applyControls(); store.set({ auto: { ...this.auto } }); this.toast(this.auto.power ? 'Slow cruise — about 2 knots. ↑ ↓ change the throttle, V stops' : 'Engine to idle — drifting'); }
+  toggleCreep() { if (!this.walking) return this.toast('Stand up from the wheel first (B)'); this.auto.power = this.auto.power > 0 ? 0 : 1.2; this.applyControls(); store.set({ auto: { ...this.auto } }); this.toast(this.auto.power ? 'Slow stealth cruise (~2.3 kn) — shoals stay calm. ↑ ↓ change throttle, V stops' : 'Engine to idle — drifting quietly'); }
   creepSlower() {}
   walkInput() { const k = this.keysDown, t = this.touch; return { fwd: clamp((k.has('KeyW') ? 1 : 0) - (k.has('KeyS') ? 1 : 0) + t.fwd, -1, 1), strafe: clamp((k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0) + t.strafe, -1, 1), run: k.has('ShiftLeft') || k.has('ShiftRight') || t.run }; }
   setTouchMove(fwd, strafe, run = false) { this.touch.fwd = fwd; this.touch.strafe = strafe; this.touch.run = run; }
@@ -105,36 +132,39 @@ export class World {
   }
   release() { if (!this.charging) return; this.charging = false; store.set({ charge: null }); this.throwCast(this.meter); }
   deckEyeWorld() { return this.S.hullG.localToWorld(this.S.DECK.eye.clone()); }
-  castRange() { const net = store.get().nets.cast; return net ? clamp(8.3 - net.weight * .5, 3.2, 8) : 6; }
-  throwCast(m) {
-    const net = this.net(), S = this.S, comp = compat(net, this.boatDef), q = 1 - clamp(Math.abs(m - .8) / .5, 0, 1);
-    /* heavier = shorter throw. A weak wind-up (meter low) gives a short toss */
-    const base = clamp(8.3 - net.weight * .5, 3.2, 8), dist = clamp(base * (.55 + .45 * clamp(m / .8, 0, 1)) * (comp.over > 1.1 ? .9 : 1), 2.5, 8);
+  castRange() { const net = store.get().nets.cast; return net ? clamp(8.8 - net.weight * .45, 3.5, 8.5) : 6.5; }
+  calcThrowTarget(m = .8) {
+    const net = store.get().nets.cast || this.net(), S = this.S, comp = compat(net, this.boatDef), q = 1 - clamp(Math.abs(m - .8) / .5, 0, 1);
+    const base = clamp(8.8 - net.weight * .45, 3.5, 8.5), dist = clamp(base * (.55 + .45 * clamp(m / .8, 0, 1)) * (comp.over > 1.1 ? .9 : 1), 2.5, 8.5);
     const eye = this.deckEyeWorld(), yaw = S.boat.heading + S.DECK.yaw, dir = new V3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const hand = eye.clone().add(new V3(0, -.45, 0)).addScaledVector(dir, .3);
+    return { net, comp, q, dist, hand, dir, tx: hand.x + dir.x * dist, tz: hand.z + dir.z * dist };
+  }
+  throwCast(m) {
+    const { net, comp, q, dist, hand, dir, tx, tz } = this.calcThrowTarget(m);
     this.lastThrow = { q, dist, m };
-    this.cast = new CastNet(S, { ...net }, net.meshIdx, hand, dir, dist, q, comp, (cn) => this.onLand(cn, q));
-    this.gulls.event('throw', hand.x + dir.x * dist, hand.z + dir.z * dist);
+    this.cast = new CastNet(this.S, { ...net }, net.meshIdx, hand, dir, dist, q, comp, (cn) => this.onLand(cn, q));
+    this.gulls.event('throw', tx, tz);
     this.cd = 1; tick('good'); store.set({ netState: { text: 'Throwing…' } });
-    this.toast(q > .85 ? 'Good release — the net is spinning open' : q > .5 ? 'Decent throw — it may not open fully' : 'Rushed throw — the net will be half folded. Release in the green next time');
+    this.toast(q > .85 ? 'Clean release — the net is spinning open!' : q > .5 ? 'Decent throw — opening over the water' : 'Rushed throw — release in the green sweet spot for full spread');
   }
   /* the net has hit the water and settled: read what it actually covers and queue the cut-away */
   onLand(cn, q) {
     if (cn.hauling) return;
     const fp = cn.footprint, fw = this.fw, net = cn.net, env = seaEnv(), comp = compat(net, this.boatDef);
-    fw.scare(fp.cx, fp.cz, 7 + net.radius, .9);
+    fw.scare(fp.cx, fp.cz, 4.5 + net.radius * .8, .35);
     this.gulls.event('escape', fp.cx, fp.cz);
-    const inside = fw.fishNear(fp.cx, fp.cz, Math.max(fp.effR, net.radius * .5) * 1.18, 13), seabed = Math.max(14, 1.3 * (this.S.P.hs || 0) + 6);
+    const inside = fw.fishNear(fp.cx, fp.cz, Math.max(fp.effR, net.radius * .6) * 1.32, 13), seabed = Math.max(14, 1.3 * (this.S.P.hs || 0) + 6);
     let near = null, nd = 1e9; for (const s of fw.schools) { const d = Math.hypot(s.x - fp.cx, s.z - fp.cz); if (d < nd) { nd = d; near = s; } }
-    const lab = !near ? 'miss' : nd < near.rad * .4 ? 'direct hit' : nd < near.rad + fp.effR * .6 ? 'edge hit' : 'miss';
-    const MAXP = 72, mult = Math.max(1, inside.length / MAXP), picks = inside.length > MAXP ? inside.filter((_, i) => R() < MAXP / inside.length) : inside;
+    const lab = !near ? 'miss' : nd < near.rad * .5 ? 'direct hit' : nd < near.rad + fp.effR * .75 ? 'edge hit' : 'miss';
+    const MAXP = 72, mult = Math.max(1, inside.length / MAXP), picks = inside.length > MAXP ? inside.filter(() => R() < MAXP / inside.length) : inside;
     const pool = picks.map((f) => ({ ref: f, sp: f.sp.id, len: f.sp.len * f.lenK, depth: -f.y, x: (f.x - fp.cx) / Math.max(net.radius, .5), z: (f.z - fp.cz) / Math.max(net.radius, .5), speed: f.sp.speed, panic: f.sp.panic, dive: f.sp.dive, flee: f.sp.flee, shy: f.sp.shy }));
     const deepNear = near && near.d > CAST_MAX_DEPTH && nd < near.rad + net.radius;
     const pending = { type: 'cast', net, meshIdx: net.meshIdx, comp, env, pool, mult, effR: fp.effR, R: net.radius, openFrac: fp.openFrac, holes: fp.holes, quality: q, sinkRate: net.sinkRate, seabed, label: lab, boatSpeed: Math.abs(this.boat.speed), noise: this.lastNoise, deepNear: !!deepNear, closeBoost: 1, spin: fp.spin };
     if (!pool.length) { cn.autoHaulAt = this.t + 1.7; this.pending = null; this.cd = 3; this.toast('The net settles over empty water — no fish under it. Hauling it back…'); store.set({ netState: { text: 'Empty water under the net — hauling' } }); return; }
-    const e = estimatePool(pool, net, net.meshIdx, .7);
-    this.queueGame(pending, { fish: Math.round(e.fish * mult), value: Math.round(e.value * mult) }, 1.1);
-    this.toast(fp.openFrac > .8 ? 'The net opened well and is sinking…' : fp.openFrac > .5 ? 'The net only half opened — sinking with folds…' : 'The net landed bunched up — it will not cover much');
+    const e = estimatePool(pool, net, net.meshIdx, .75);
+    this.queueGame(pending, { fish: Math.round(e.fish * mult), value: Math.round(e.value * mult) }, 1.0);
+    this.toast(fp.openFrac > .8 ? 'The net opened wide and is sinking over the fish…' : fp.openFrac > .5 ? 'The net half-opened and is sinking…' : 'The net landed bunched — cinch quickly!');
   }
   queueGame(pending, estimate, delay) { this.pending = pending; this.pendingEst = estimate; this.startAt = this.t + delay; this.cd = 9; }
   haul() {
@@ -181,77 +211,10 @@ export class World {
     this.toast('Start buoy dropped and the net is leaving the stern. Steer a wide circle around the school and come back toward the buoy — the purse closes by itself when you are near it.'); store.set({ rig: { type: 'seine' } });
   }
   stern(k = 3.6) { const h = this.boat.heading; return [this.boat.position.x + Math.sin(h) * k, this.boat.position.z + Math.cos(h) * k]; }
-  seineCloseR() { return clamp(this.wall.net.length * .07, 10, 22); }
+  seineCloseR() { return clamp(this.wall.net.length * .08, 12, 24); }
   beginSeineClose(why) {
     const w = this.wall, net = w.net; if (!w || this.seineState !== 'laying') return; const L = w.length();
-    if (L < Math.max(30, net.length * .25)) return this.toast('Not enough net laid yet — keep going around the school');
+    if (L < Math.max(28, net.length * .22)) return this.toast('Not enough net laid yet — keep going around the school');
     this.seineState = 'closing'; this.closeT = 0; const pts = w.pts, n = pts.length; let cx = 0, cz = 0; pts.forEach((p) => { cx += p.x; cz += p.z; }); cx /= n; cz /= n; w.cx = cx; w.cz = cz;
     const a = pts[0], b = pts[n - 1], gap = Math.hypot(a.x - b.x, a.z - b.z), inPoly = (x, z) => { let c = false; for (let i = 0, j = n - 1; i < n; j = i++) if ((pts[i].z > z) !== (pts[j].z > z) && x < (pts[j].x - pts[i].x) * (z - pts[i].z) / (pts[j].z - pts[i].z) + pts[i].x) c = !c; return c; };
-    const fish = []; for (const s of this.fw.schools) { if (Math.hypot(s.x - cx, s.z - cz) > L / 2 + 40) continue; for (const f of s.fish) if (-f.y < net.depth * .92 && inPoly(f.x, f.z) && (s.fl <= 0 || R() < .35)) fish.push(f); }
-    const MAXP = 90, mult = Math.max(1, fish.length / MAXP), picks = fish.length > MAXP ? fish.filter(() => R() < MAXP / fish.length) : fish;
-    const env = seaEnv(), comp = compat(net, this.boatDef), pool = picks.map((f) => ({ ref: f, sp: f.sp.id, len: f.sp.len * f.lenK, depth: -f.y, speed: f.sp.speed, shy: f.sp.shy, a: R() * TAU, r: Math.sqrt(R()) }));
-    this.seineData = { pool, mult, gap, L, circ: L, diam: L / Math.PI, comp, env, net, inside: fish.length };
-    this.toast(why === 'auto' ? 'Back at the buoy — the ends join and the purse line starts drawing the bottom shut…' : 'Closing the ring early — the ends join and the purse line draws…');
-    store.set({ netState: { text: 'Closing the ring · pulling the purse line' } }); this.gulls.event('escape', cx, cz); this.fw.scare(cx, cz, L / 3, .5);
-  }
-  openSeineGame() {
-    const d = this.seineData; if (!d.pool.length) { this.dying.push({ w: this.wall, buoy: this.buoy, t: 0, from: this.wall.pull }); this.wall = null; this.buoy = null; this.seineState = 'idle'; store.set({ rig: null, netState: null }); return this.emptyHaul('The seine'); }
-    this.seineState = 'pursing';
-    this.pending = { type: 'seine', net: d.net, meshIdx: d.net.meshIdx, comp: d.comp, env: d.env, pool: d.pool, mult: d.mult, gap: d.gap, L: d.L, seabed: 14, inside: d.inside }; this.gameActive = true; store.set({ game: this.pending, netState: null });
-  }
-  haulSeine() {
-    if (!this.wall) return this.toast('Lay the seine around a school first (F)');
-    if (this.seineState === 'laying') return this.beginSeineClose('manual'); this.toast(this.seineState === 'closing' ? 'The ring is still closing…' : 'Purse the net with the game');
-  }
-  /* ---------- gillnet ---------- */
-  setGill() {
-    const net = this.net(); if (this.layingGill) { this.layingGill = null; this.endBuoy(this.gill[this.gill.length - 1]); return this.toast('Gillnet set. Drive off; J soaks 3 hours; come back within 40 m and haul with G'); }
-    const w = new WallNet(this.S, net, net.meshIdx, 'gill'); const st = this.stern(3.4); w.add(...st); w.hours = 0; w.laid = 0; w.hp = 100; w.buoyA = new Buoy(this.S, st[0], st[1], 0xffcc22); this.gill.push(w); this.layingGill = w; this.toast('Laying the gillnet — drive in a fairly straight line; F again to finish'); store.set({ rig: { type: 'gill' } });
-  }
-  endBuoy(w) { if (!w || w.buoyB) return; const l = w.pts[w.pts.length - 1]; w.buoyB = new Buoy(this.S, l.x, l.z, 0xffcc22); }
-  soak() {
-    if (!this.gill.length) return this.toast('Set a gillnet first (method Gill, F)'); if (this.layingGill) { this.endBuoy(this.layingGill); this.layingGill = null; } for (const w of this.gill) { w.hours += 3; }
-    this.S.P.hour = (this.S.P.hour + 3) % 24; this.toast('3 hours pass quietly… the nets fish'); store.set({ estimate: this.gillEstimate() });
-  }
-  gillCatchPool(w) {
-    const net = w.net, c = w.pts[Math.floor(w.pts.length / 2)] || w.pts[0], pool = []; if (!c) return pool;
-    const night = this.S.U.uNight.value, hrs = Math.max(w.hours, 0), L = w.length();
-    for (const s of this.fw.schools) {
-      const d = Math.hypot(s.x - c.x, s.z - c.z); if (d > 260) continue; const sp = s.sp;
-      const ov = Math.max(0, Math.min(net.depth, sp.depth[1]) - Math.max(.3, sp.depth[0])) / Math.max(.5, sp.depth[1] - sp.depth[0]);
-      const enc = ov * Math.exp(-d / 110) * (L / 120) * (1 + .6 * night) * Math.min(hrs, 9) / 3 * (s.lone ? .25 : 1);
-      const k = Math.min(s.fish.length * .5, Math.round(s.fish.length * enc * .22)); for (let i = 0; i < k; i++) { const f = s.fish[i % s.fish.length]; pool.push({ ref: null, sp: sp.id, len: sp.len * f.lenK, depth: Math.min(net.depth, -f.y), speed: sp.speed, shy: sp.shy, tangle: 1 + (R() * 2 | 0) }); }
-    }
-    return pool.slice(0, 80);
-  }
-  gillEstimate() { const w = this.gill[0]; if (!w) return null; const pool = this.gillCatchPool(w), net = w.net, e = estimatePool(pool, net, net.meshIdx, .8); return { ...e, diff: .4 }; }
-  haulGill() {
-    const [x, z] = this.stern(0); const w = this.gill.find((g) => g.pts.some((p) => Math.hypot(p.x - x, p.z - z) < 40)); if (!w) return this.toast(this.gill.length ? 'Get within 40 m of a gillnet buoy to haul it' : 'No gillnet set — press F while driving to lay one'); if (this.layingGill) { this.endBuoy(this.layingGill); this.layingGill = null; }
-    const net = w.net, env = seaEnv(), comp = compat(net, this.boatDef), pool = this.gillCatchPool(w); const bycatch = R() < .12 * Math.min(w.hours / 6, 1.5) ? 1 + (R() * 2 | 0) : 0;
-    if (!pool.length && !bycatch) { w.dispose(); w.buoyA && w.buoyA.dispose(); w.buoyB && w.buoyB.dispose(); this.gill = this.gill.filter((g) => g !== w); store.set({ rig: this.gill.length ? { type: 'gill' } : null }); return this.emptyHaul('The gillnet'); }
-    this.pending = { type: 'gill', net, meshIdx: net.meshIdx, comp, env, pool, mult: 1, hours: w.hours, bycatch, wall: w, seabed: 14 }; this.gameActive = true; store.set({ game: this.pending, estimate: this.gillEstimate() });
-  }
-
-  /* --------------------------- game finished (called by React 2D games) --------------------------- */
-  finishGame(res) {
-    const g = this.pending, net = g.net; this.gameActive = false; this.pending = null;
-    const caught = res.caught || {}; let n = 0, v = 0; const hold = { ...store.get().hold };
-    for (const k in caught) { n += caught[k]; v += caught[k] * SPECIES[k].value; hold[k] = (hold[k] || 0) + caught[k]; }
-    if (g.pool && res.caughtIdx) { const refs = res.caughtIdx.map((i) => g.pool[i] && g.pool[i].ref).filter(Boolean); this.fw.removeFish(refs); if (g.mult > 1 && g.type === 'cast' && this.cast && this.cast.footprint) { const extra = Math.round(refs.length * (g.mult - 1)), c = this.cast.footprint; this.fw.removeFish(this.fw.fishNear(c.cx, c.cz, c.effR, 14).slice(0, extra)); } }
-    if (g.type === 'cast' && this.cast) { this.cast.driven = null; this.cast.hauling = true; this.cast.closeTarget = 1; }
-    if (g.type === 'trawl') { this.rig.dispose(); this.rig = null; this.trawlPending = false; store.set({ rig: null, trawl: null }); }
-    if (g.type === 'seine') { this.fw.removeFish(g.pool.filter((p, i) => (res.caughtIdx || []).includes(i)).map((p) => p.ref)); this.dying.push({ w: this.wall, buoy: this.buoy, t: 0, from: this.wall.pull }); this.wall = null; this.buoy = null; this.seineState = 'idle'; store.set({ rig: null }); }
-    if (g.type === 'gill') { g.wall.dispose(); g.wall.buoyA && g.wall.buoyA.dispose(); g.wall.buoyB && g.wall.buoyB.dispose(); this.gill = this.gill.filter((w) => w !== g.wall); store.set({ rig: this.gill.length ? { type: 'gill' } : null }); }
-    const streak = res.perfect ? store.get().streak + 1 : n > 0 ? store.get().streak : 0, bonus = 1 + Math.min(streak, 6) * .05; v = Math.round(v * bonus * 100) / 100;   // cents: the result panel, the hold and the sale all use this exact number
-    const hv = Math.round((store.get().holdValue + v) * 100) / 100; net.uses = (net.uses || 0) + 1;
-    store.set({ hold, holdValue: hv, game: null, estimate: null, streak, best: Math.max(store.get().best, Math.round(v)), result: { ...res, n, value: v, bonus, type: g.type, tip: res.tip, name: net.name, codend: g.type === 'trawl' ? g.codend : undefined, escaped: g.type === 'trawl' ? g.escaped : undefined } });
-    if (n > 0) { chime(res.perfect ? 'perfect' : 'good'); if (v > 12 || n > 12) this.gulls.event('catch', this.boat.position.x, this.boat.position.z); } else chime('soft');
-    this.applyControls();
-  }
-  sell() { const s = store.get(); if (!s.holdValue) return this.toast('The hold is empty'); const p = Math.round(s.holdValue * 100) / 100; store.set({ cash: Math.round((s.cash + p) * 100) / 100, hold: {}, holdValue: 0 }); chime('good'); this.toast(`Sold the catch for $${p.toFixed(2)}`); }
-
-  /* --------------------------- per-frame --------------------------- */
-  tick(dt) {
-    if (this.paused && !this._manual) return;
-    this.t += dt; const S = this.S, st = store.get(), boat = this.boat, C = S.CTL;
-    this.cd = Math.max(0, this.cd - dt);
+    const fish = []; for (const s of this.fw.schools) { if (Math.hypot(s.x - cx, s.z - cz) > L / 2 + 45) continue; for (const f of s.fish) if (-f.y < net.depth * .95 && (inPoly(f.x, f.z) || Math.hypot(f.x - cx, f.z - cz) < L / (TAU * 1.15)) && (s.fl <= 0 || R() < .6)) fish.push(f); }

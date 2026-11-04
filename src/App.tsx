@@ -81,6 +81,7 @@ function ResultPanel() {
         <div className="text-[11px] text-sky-200/80 mb-2">{r.name}</div>
         <div className="my-2 flex flex-wrap justify-center gap-1.5">{Object.entries(r.caught || {}).map(([k, n]: any) => <span key={k} className="rounded-full bg-white/10 px-2.5 py-1 text-xs">{n} × {SPECIES[k].name}</span>)}{!r.n && <span className="text-sm text-sky-100/80">No fish this time</span>}</div>
         <div className="text-3xl font-semibold" data-testid="result-value">{r.n ? fmtCash(r.value) : '—'}</div>
+        {r.hotHit && r.hotSpecies && <div className="text-xs text-emerald-300">🔥 +35% Market Demand bonus ({SPECIES[r.hotSpecies]?.name})</div>}
         {r.bonus > 1 && <div className="text-xs text-amber-200">perfect-streak bonus ×{r.bonus.toFixed(2)}</div>}
         {r.fine > 0 && <div className="text-xs text-rose-300">fines −${r.fine}</div>}
         <div className="mt-2 text-xs text-sky-100/90 leading-snug">{r.tip}</div>
@@ -107,6 +108,14 @@ function Hud() {
         {open && net && <div className="text-[11px] leading-tight text-sky-50/90">{net.name} · {net.sizeLabel}<br />{net.weight.toFixed(1)} kg · mesh <button className="pe underline" onClick={() => world().cycleMesh()}>{net.mesh[net.meshIdx]} mm</button> · {net.material.name}</div>}
         {c && c.over > .9 && <div className="rounded-lg bg-rose-500/25 border border-rose-300/40 px-2 py-1 text-[10px] leading-tight text-rose-100">⚠ {c.warning}</div>}
         <div className="flex gap-1 flex-wrap"><Btn on={() => world().goDeck()} active={walking} data-testid="walk-btn">{walking ? 'Back to the wheel (B)' : 'Leave the wheel (B)'}</Btn><Btn on={() => store.set({ workshop: true })}>Workshop (Z)</Btn>{open && <Btn on={() => { const S = (window as any).sea; S.setMode(S.getMode() + 1); world().syncMode(); }}>📷 Camera (C)</Btn>}{open && <Btn active={s.finder} on={() => store.set({ finder: !s.finder })}>Fish finder</Btn>}</div>
+        {open && (
+          <div className="flex items-center justify-between gap-1.5 rounded-lg bg-white/5 px-2 py-1 text-[10px]">
+            <span className={s.stealth === 'quiet' ? 'text-emerald-300' : s.stealth === 'moderate' ? 'text-amber-300' : 'text-rose-300'}>
+              ● {s.stealth === 'quiet' ? 'Quiet approach (shoals calm)' : s.stealth === 'moderate' ? 'Moderate wake' : 'Fast wake (slow near shoals)'}
+            </span>
+            {s.gullCue && <span className="text-sky-200/85 whitespace-nowrap">🕊 {s.gullCue.circling} feeding{s.gullCue.flockDist ? ` (${s.gullCue.flockDist}m)` : ''}</span>}
+          </div>
+        )}
         {walking ? (
           <div className="rounded-lg bg-white/10 px-2 py-1 text-[11px] leading-snug" data-testid="autopilot">
             <div className="flex items-center justify-between"><span>Engine {s.auto.power > 0 ? 'cruise' : 'idle'}</span><span className="font-mono"><button className="pe px-1.5" onClick={() => world().setAuto(-.5, 0)}>−</button>{kn(s.auto.power)} kn<button className="pe px-1.5" onClick={() => world().setAuto(.5, 0)}>+</button></span></div>
@@ -115,8 +124,25 @@ function Hud() {
           </div>
         ) : open && <div className="text-[10px] text-sky-200/75">At the wheel: W S throttle · A D steer · drag to look. B stands you up — the engine drops to idle.</div>}
         <div className="flex justify-between items-center border-t border-white/15 pt-1"><span data-testid="hold">Hold: {holdN} fish · {fmtCash(s.holdValue)}</span><Btn on={() => world().sell()}>Sell (H)</Btn></div>
+        {open && holdN > 0 && (
+          <div className="flex flex-wrap gap-1 pt-0.5">
+            {Object.entries(s.hold).map(([k, n]: any) => n > 0 && (
+              <span key={k} className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-sky-100">{n}× {SPECIES[k]?.name}</span>
+            ))}
+          </div>
+        )}
+        {open && s.hotSpecies && SPECIES[s.hotSpecies] && (
+          <div className="text-[10px] text-emerald-300/90">🔥 Market demand +35%: <b>{SPECIES[s.hotSpecies].name}</b></div>
+        )}
         {s.streak > 0 && <div className="text-[10px] text-amber-200">perfect streak ×{s.streak}</div>}
       </div>
+      {walking && s.method === 'cast' && s.nearSpot && !s.game && (
+        <div className={`fixed left-1/2 -translate-x-1/2 bottom-14 z-20 rounded-full border px-3.5 py-1 text-[11px] font-medium backdrop-blur ${s.nearSpot.inRing > 0 ? 'border-emerald-300/60 bg-emerald-950/75 text-emerald-100' : 'border-sky-300/40 bg-slate-950/65 text-sky-100'}`}>
+          {s.nearSpot.inRing > 0
+            ? `🎯 ${s.nearSpot.inRing} ${s.nearSpot.sp} in aim ring (${s.nearSpot.depth} m) — Hold F & release in green!`
+            : `🎯 ${s.nearSpot.sp} shoal ${s.nearSpot.dist} m from aim ring (${s.nearSpot.depth} m deep)`}
+        </div>
+      )}
       {co && !s.game && !small && (
         <div className="fixed right-3 top-10 z-10 w-[290px] rounded-2xl border border-white/20 bg-slate-950/50 p-2.5 text-white backdrop-blur text-[11.5px] leading-snug" data-testid="coach">
           <div className="text-[11px] font-semibold text-amber-200 mb-1">How to fish: {METHODS[co.method].name}</div>

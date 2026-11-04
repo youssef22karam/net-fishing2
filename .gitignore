@@ -5,3 +5,4 @@ src/engine/boat.js
 src/engine/sea.js
 src/game/nets3d.js
 src/game/world.js
+src/game/fish.js
